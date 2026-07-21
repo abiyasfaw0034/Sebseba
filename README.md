@@ -1,12 +1,20 @@
 # Abiyasfaw
 
-Blind dating platform inspired by Ethiopian culture, with a Next.js dashboard and a React Native Expo mobile app.
+Blind dating platform inspired by Ethiopian culture.
 
-## Planned Structure
+## Apps
 
-- `apps/dashboard` - Next.js admin and operations dashboard
-- `apps/mobile` - React Native Expo dating app
+- `apps/dashboard` - Next.js dashboard for operations, moderation, event planning, and match health.
+- `apps/mobile` - React Native Expo app for blind-first matching, cultural prompts, and date planning.
 
-## Status
+## Scripts
 
-Repository setup is in progress.
+```bash
+npm run dashboard:dev
+npm run dashboard:build
+npm run dashboard:lint
+npm run mobile:start
+npm run mobile:web
+```
+
+Each app owns its own dependencies and package lock.

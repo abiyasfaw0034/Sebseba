@@ -1,0 +1,13 @@
+{
+  "name": "abiyasfaw",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Blind dating platform inspired by Ethiopian culture.",
+  "scripts": {
+    "dashboard:dev": "npm --prefix apps/dashboard run dev",
+    "dashboard:build": "npm --prefix apps/dashboard run build",
+    "dashboard:lint": "npm --prefix apps/dashboard run lint",
+    "mobile:start": "npm --prefix apps/mobile run start",
+    "mobile:web": "npm --prefix apps/mobile run web"
+  }
+}

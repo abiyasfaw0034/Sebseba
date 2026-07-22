@@ -10,11 +10,18 @@ Blind dating platform inspired by Ethiopian culture.
 ## Scripts
 
 ```bash
-npm run dashboard:dev
-npm run dashboard:build
-npm run dashboard:lint
-npm run mobile:start
-npm run mobile:web
+npm run dev
+npm run expo
 ```
 
-Each app owns its own dependencies and package lock.
+Use `npm run dev` for the Next.js dashboard and `npm run expo` for the Expo mobile app.
+For browser-based mobile preview, run `npm run expo:web`.
+
+Build and lint shortcuts:
+
+```bash
+npm run build
+npm run lint
+```
+
+Each app owns its own dependencies and package lock. The longer app-specific scripts are still available when needed.

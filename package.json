@@ -4,6 +4,11 @@
   "private": true,
   "description": "Blind dating platform inspired by Ethiopian culture.",
   "scripts": {
+    "dev": "npm --prefix apps/dashboard run dev",
+    "expo": "npm --prefix apps/mobile run start",
+    "expo:web": "npm --prefix apps/mobile run web",
+    "build": "npm --prefix apps/dashboard run build",
+    "lint": "npm --prefix apps/dashboard run lint",
     "dashboard:dev": "npm --prefix apps/dashboard run dev",
     "dashboard:build": "npm --prefix apps/dashboard run build",
     "dashboard:lint": "npm --prefix apps/dashboard run lint",

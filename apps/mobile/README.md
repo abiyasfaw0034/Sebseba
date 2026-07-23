@@ -16,6 +16,7 @@ Expo React Native prototype for the member-facing blind match experience.
 - Photo reveal rules gated by prompts, voice intro, and hosted date acceptance
 - Hosted first-date choices
 - Safety pause control
+- Backend-backed profile and prompt answer persistence when the dashboard API is running
 
 ## Run
 
@@ -32,3 +33,9 @@ From the repository root:
 npm run mobile:start
 npm run mobile:web
 ```
+
+## Persistence
+
+The app saves member state to the dashboard API at `http://localhost:3000/api/member-state` by default. Start the dashboard with `npm run dev` from the repository root before running Expo.
+
+For device testing, set `EXPO_PUBLIC_ABIYASFAW_API_URL` to a reachable dashboard URL, for example `http://192.168.1.25:3000`. Use `EXPO_PUBLIC_ABIYASFAW_MEMBER_ID` to test multiple saved member profiles.

@@ -1,6 +1,6 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   ImageBackground,
   Pressable,
@@ -58,6 +58,26 @@ type RankedMatch = CandidateMatch & {
   sharedLanguages: string[];
   riskConflicts: string[];
 };
+
+type PersistedMemberState = {
+  memberId?: string;
+  onboardingComplete?: boolean;
+  profile?: OnboardingProfile;
+  selectedMatchId?: string;
+  selectedCue?: string;
+  selectedSpot?: string;
+  selectedPrompt?: string;
+  answeredPromptIds?: string[];
+  promptAnswers?: Record<string, string>;
+  activeVoicePromptId?: string;
+  savedVoicePromptIds?: string[];
+  acceptedDatePlan?: boolean;
+  photoRevealRequested?: boolean;
+  revealPausedUntil?: string | null;
+  updatedAt?: string;
+};
+
+type SyncStatus = 'loading' | 'saving' | 'saved' | 'offline';
 
 const defaultOnboardingProfile: OnboardingProfile = {
   intention: 'Long-term',
@@ -230,6 +250,8 @@ const promptExchange = [
   },
 ];
 
+const promptExchangeIds = promptExchange.map((prompt) => prompt.id);
+
 const voicePrompts = [
   {
     id: 'home',
@@ -260,6 +282,17 @@ const tabs = [
   { label: 'Dates', icon: 'calendar-outline' },
   { label: 'Me', icon: 'person-outline' },
 ];
+
+const memberStateApiBaseUrl = process.env.EXPO_PUBLIC_ABIYASFAW_API_URL?.replace(/\/$/, '') ?? 'http://localhost:3000';
+const memberStateMemberId = process.env.EXPO_PUBLIC_ABIYASFAW_MEMBER_ID?.trim() || 'demo-member';
+const memberStateEndpoint = `${memberStateApiBaseUrl}/api/member-state?memberId=${encodeURIComponent(memberStateMemberId)}`;
+
+const syncCopy: Record<SyncStatus, string> = {
+  loading: 'Loading profile',
+  saving: 'Saving profile',
+  saved: 'Profile saved',
+  offline: 'Offline mode',
+};
 
 const mapDateStyleToSpot = (dateStyle: string) => {
   if (dateStyle === 'Mesob dinner') {
@@ -344,18 +377,25 @@ const rankCandidate = (user: OnboardingProfile, candidate: CandidateMatch): Rank
 
 export default function App() {
   const [showOnboarding, setShowOnboarding] = useState(true);
+  const [onboardingComplete, setOnboardingComplete] = useState(false);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
   const [onboardingProfile, setOnboardingProfile] = useState<OnboardingProfile>(defaultOnboardingProfile);
   const [selectedMatchId, setSelectedMatchId] = useState(candidateMatches[0].id);
   const [selectedCue, setSelectedCue] = useState(candidateMatches[0].cues[0]);
   const [selectedSpot, setSelectedSpot] = useState(mapDateStyleToSpot(defaultOnboardingProfile.dateStyle));
   const [selectedPrompt, setSelectedPrompt] = useState(promptExchange[0].id);
-  const [answeredPromptIds, setAnsweredPromptIds] = useState<string[]>(['song']);
+  const [answeredPromptIds, setAnsweredPromptIds] = useState<string[]>([]);
+  const [promptAnswers, setPromptAnswers] = useState<Record<string, string>>({});
   const [activeVoicePromptId, setActiveVoicePromptId] = useState(voicePrompts[0].id);
   const [savedVoicePromptIds, setSavedVoicePromptIds] = useState<string[]>([]);
   const [acceptedDatePlan, setAcceptedDatePlan] = useState(false);
   const [photoRevealRequested, setPhotoRevealRequested] = useState(false);
+  const [revealPausedUntil, setRevealPausedUntil] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>('loading');
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [memberStateLoaded, setMemberStateLoaded] = useState(false);
   const [draft, setDraft] = useState('');
+  const saveRequestRef = useRef(0);
   const { width } = useWindowDimensions();
 
   const cardWidth = useMemo(() => Math.min(width - 32, 430), [width]);
@@ -368,11 +408,23 @@ export default function App() {
   const selectedPromptDetail =
     promptExchange.find((prompt) => prompt.id === selectedPrompt) ?? promptExchange[0];
   const activeVoicePrompt = voicePrompts.find((prompt) => prompt.id === activeVoicePromptId) ?? voicePrompts[0];
-  const answeredCount = answeredPromptIds.length;
+  const persistedAnsweredPromptIds = useMemo(
+    () => Array.from(new Set([...answeredPromptIds, ...Object.keys(promptAnswers)])).filter((promptId) =>
+      promptExchangeIds.includes(promptId),
+    ),
+    [answeredPromptIds, promptAnswers],
+  );
+  const answeredCount = persistedAnsweredPromptIds.length;
   const revealProgress = Math.round((answeredCount / promptExchange.length) * 100);
   const promptsRemaining = promptExchange.length - answeredCount;
+  const selectedPromptAnswer = promptAnswers[selectedPrompt] ?? '';
   const activeOnboardingStep = onboardingSteps[onboardingIndex];
   const onboardingProgress = Math.round(((onboardingIndex + 1) / onboardingSteps.length) * 100);
+  const revealPauseActive = revealPausedUntil ? new Date(revealPausedUntil).getTime() > Date.now() : false;
+  const syncDetail =
+    syncStatus === 'saved' && lastSyncedAt
+      ? `Profile saved ${new Date(lastSyncedAt).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
+      : syncCopy[syncStatus];
   const matchSignals = [
     { label: 'Best overlap', value: selectedMatch.reasons[0] ?? 'values aligned' },
     { label: 'Language fit', value: selectedMatch.sharedLanguages.join(' + ') || 'Host-assisted' },
@@ -383,7 +435,141 @@ export default function App() {
     { label: 'Voice intro saved', complete: savedVoicePromptIds.length > 0 },
     { label: 'Hosted date accepted', complete: acceptedDatePlan },
   ];
-  const canRequestPhotoReveal = revealRequirements.every((requirement) => requirement.complete);
+  const canRequestPhotoReveal = revealRequirements.every((requirement) => requirement.complete) && !revealPauseActive;
+
+  useEffect(() => {
+    let cancelled = false;
+
+    const loadMemberState = async () => {
+      setSyncStatus('loading');
+
+      try {
+        const response = await fetch(memberStateEndpoint);
+
+        if (!response.ok) {
+          throw new Error(`Member state load failed: ${response.status}`);
+        }
+
+        const state = (await response.json()) as PersistedMemberState;
+        const profile = {
+          ...defaultOnboardingProfile,
+          ...state.profile,
+          languages: state.profile?.languages?.length ? state.profile.languages : defaultOnboardingProfile.languages,
+          dealbreakers: state.profile?.dealbreakers?.length ? state.profile.dealbreakers : defaultOnboardingProfile.dealbreakers,
+        };
+
+        if (cancelled) {
+          return;
+        }
+
+        setOnboardingProfile(profile);
+        setOnboardingComplete(Boolean(state.onboardingComplete));
+        setShowOnboarding(!state.onboardingComplete);
+        setSelectedMatchId(state.selectedMatchId ?? candidateMatches[0].id);
+        setSelectedCue(state.selectedCue ?? candidateMatches[0].cues[0]);
+        setSelectedSpot(state.selectedSpot ?? mapDateStyleToSpot(profile.dateStyle));
+        setSelectedPrompt(state.selectedPrompt ?? promptExchange[0].id);
+        setAnsweredPromptIds(state.answeredPromptIds ?? []);
+        setPromptAnswers(state.promptAnswers ?? {});
+        setActiveVoicePromptId(state.activeVoicePromptId ?? voicePrompts[0].id);
+        setSavedVoicePromptIds(state.savedVoicePromptIds ?? []);
+        setAcceptedDatePlan(Boolean(state.acceptedDatePlan));
+        setPhotoRevealRequested(Boolean(state.photoRevealRequested));
+        setRevealPausedUntil(state.revealPausedUntil ?? null);
+        setLastSyncedAt(state.updatedAt ?? new Date().toISOString());
+        setSyncStatus('saved');
+      } catch {
+        if (!cancelled) {
+          setSyncStatus('offline');
+        }
+      } finally {
+        if (!cancelled) {
+          setMemberStateLoaded(true);
+        }
+      }
+    };
+
+    loadMemberState();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    setDraft(promptAnswers[selectedPrompt] ?? '');
+  }, [promptAnswers, selectedPrompt]);
+
+  useEffect(() => {
+    if (!memberStateLoaded) {
+      return undefined;
+    }
+
+    const timeout = setTimeout(async () => {
+      const requestId = saveRequestRef.current + 1;
+      saveRequestRef.current = requestId;
+      setSyncStatus('saving');
+
+      const payload: PersistedMemberState = {
+        memberId: memberStateMemberId,
+        onboardingComplete,
+        profile: onboardingProfile,
+        selectedMatchId,
+        selectedCue,
+        selectedSpot,
+        selectedPrompt,
+        answeredPromptIds: persistedAnsweredPromptIds,
+        promptAnswers,
+        activeVoicePromptId,
+        savedVoicePromptIds,
+        acceptedDatePlan,
+        photoRevealRequested,
+        revealPausedUntil,
+      };
+
+      try {
+        const response = await fetch(memberStateEndpoint, {
+          method: 'PUT',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+
+        if (!response.ok) {
+          throw new Error(`Member state save failed: ${response.status}`);
+        }
+
+        const savedState = (await response.json()) as PersistedMemberState;
+
+        if (saveRequestRef.current === requestId) {
+          setLastSyncedAt(savedState.updatedAt ?? new Date().toISOString());
+          setSyncStatus('saved');
+        }
+      } catch {
+        if (saveRequestRef.current === requestId) {
+          setSyncStatus('offline');
+        }
+      }
+    }, 650);
+
+    return () => clearTimeout(timeout);
+  }, [
+    acceptedDatePlan,
+    activeVoicePromptId,
+    memberStateLoaded,
+    onboardingComplete,
+    onboardingProfile,
+    persistedAnsweredPromptIds,
+    photoRevealRequested,
+    promptAnswers,
+    revealPausedUntil,
+    savedVoicePromptIds,
+    selectedCue,
+    selectedMatchId,
+    selectedPrompt,
+    selectedSpot,
+  ]);
 
   const updateOnboardingValue = <Key extends keyof OnboardingProfile>(
     key: Key,
@@ -410,6 +596,7 @@ export default function App() {
 
   const completeOnboardingStep = () => {
     if (onboardingIndex === onboardingSteps.length - 1) {
+      setOnboardingComplete(true);
       setShowOnboarding(false);
       setSelectedMatchId(rankedMatches[0].id);
       setSelectedCue(rankedMatches[0].cues[0]);
@@ -435,12 +622,17 @@ export default function App() {
   };
 
   const saveAnswer = () => {
-    if (!draft.trim() || answeredPromptIds.includes(selectedPrompt)) {
+    const answer = draft.trim();
+
+    if (!answer || persistedAnsweredPromptIds.includes(selectedPrompt)) {
       return;
     }
 
-    setAnsweredPromptIds((current) => [...current, selectedPrompt]);
-    setDraft('');
+    setPromptAnswers((current) => ({
+      ...current,
+      [selectedPrompt]: answer,
+    }));
+    setAnsweredPromptIds((current) => Array.from(new Set([...current, selectedPrompt])));
   };
 
   const saveVoiceDraft = () => {
@@ -451,7 +643,7 @@ export default function App() {
     setSavedVoicePromptIds((current) => [...current, activeVoicePromptId]);
   };
 
-  if (showOnboarding) {
+  if (showOnboarding || !onboardingComplete) {
     const currentValue = onboardingProfile[activeOnboardingStep.key];
 
     return (
@@ -462,6 +654,7 @@ export default function App() {
             <View>
               <Text style={styles.brand}>Abiyasfaw</Text>
               <Text style={styles.subtle}>Build your match lens</Text>
+              <Text style={[styles.syncText, syncStatus === 'offline' ? styles.syncTextOffline : null]}>{syncDetail}</Text>
             </View>
             <View style={styles.stepBadge}>
               <Text style={styles.stepBadgeText}>
@@ -551,6 +744,7 @@ export default function App() {
           <View>
             <Text style={styles.brand}>Abiyasfaw</Text>
             <Text style={styles.subtle}>Blind match room</Text>
+            <Text style={[styles.syncText, syncStatus === 'offline' ? styles.syncTextOffline : null]}>{syncDetail}</Text>
           </View>
           <Pressable
             accessibilityLabel="Edit onboarding"
@@ -712,7 +906,13 @@ export default function App() {
             <View>
               <Text style={styles.kicker}>Photo reveal rules</Text>
               <Text style={styles.sectionTitle}>
-                {photoRevealRequested ? 'Waiting for mutual approval' : canRequestPhotoReveal ? 'Ready to request reveal' : 'Still blind by design'}
+                {revealPauseActive
+                  ? 'Reveal pause active'
+                  : photoRevealRequested
+                    ? 'Waiting for mutual approval'
+                    : canRequestPhotoReveal
+                      ? 'Ready to request reveal'
+                      : 'Still blind by design'}
               </Text>
             </View>
             <Ionicons name="lock-closed-outline" size={23} color="#0c5a41" />
@@ -740,7 +940,7 @@ export default function App() {
           >
             <Ionicons name="image-outline" size={17} color="#ffffff" />
             <Text style={styles.saveButtonText}>
-              {photoRevealRequested ? 'Reveal requested' : 'Request photo reveal'}
+              {revealPauseActive ? 'Reveal paused' : photoRevealRequested ? 'Reveal requested' : 'Request photo reveal'}
             </Text>
           </Pressable>
         </View>
@@ -782,7 +982,7 @@ export default function App() {
 
           {promptExchange.map((prompt, index) => {
             const active = prompt.id === selectedPrompt;
-            const answered = answeredPromptIds.includes(prompt.id);
+            const answered = persistedAnsweredPromptIds.includes(prompt.id);
             return (
               <Pressable
                 accessibilityRole="button"
@@ -809,25 +1009,26 @@ export default function App() {
           <View style={styles.answerBox}>
             <Text style={styles.answerLabel}>{selectedPromptDetail.cue}</Text>
             <TextInput
+              editable={!persistedAnsweredPromptIds.includes(selectedPrompt)}
               multiline
               onChangeText={setDraft}
               placeholder="Write a short answer"
               placeholderTextColor="#7a8377"
-              style={styles.answerInput}
+              style={[styles.answerInput, selectedPromptAnswer ? styles.answerInputSaved : null]}
               value={draft}
             />
             <Pressable
               accessibilityRole="button"
-              disabled={!draft.trim() || answeredPromptIds.includes(selectedPrompt)}
+              disabled={!draft.trim() || persistedAnsweredPromptIds.includes(selectedPrompt)}
               onPress={saveAnswer}
               style={[
                 styles.saveButton,
-                !draft.trim() || answeredPromptIds.includes(selectedPrompt) ? styles.buttonDisabled : null,
+                !draft.trim() || persistedAnsweredPromptIds.includes(selectedPrompt) ? styles.buttonDisabled : null,
               ]}
             >
               <Ionicons name="send-outline" size={17} color="#ffffff" />
               <Text style={styles.saveButtonText}>
-                {answeredPromptIds.includes(selectedPrompt) ? 'Saved' : 'Save answer'}
+                {persistedAnsweredPromptIds.includes(selectedPrompt) ? 'Saved' : 'Save answer'}
               </Text>
             </Pressable>
           </View>
@@ -938,7 +1139,9 @@ export default function App() {
           <View style={styles.sectionHeader}>
             <View>
               <Text style={styles.kicker}>Safety controls</Text>
-              <Text style={styles.sectionTitle}>Keep the reveal pace mutual</Text>
+              <Text style={styles.sectionTitle}>
+                {revealPauseActive ? 'Reveal is paused for review' : 'Keep the reveal pace mutual'}
+              </Text>
             </View>
             <Ionicons name="shield-checkmark-outline" size={24} color="#0c5a41" />
           </View>
@@ -957,9 +1160,18 @@ export default function App() {
               </View>
             ))}
           </View>
-          <Pressable accessibilityRole="button" style={styles.reportButton}>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => {
+              setRevealPausedUntil(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString());
+              setPhotoRevealRequested(false);
+            }}
+            style={styles.reportButton}
+          >
             <Ionicons name="time-outline" size={18} color="#1f241f" />
-            <Text style={styles.reportButtonText}>Pause reveal for 24 hours</Text>
+            <Text style={styles.reportButtonText}>
+              {revealPauseActive ? 'Reveal paused for 24 hours' : 'Pause reveal for 24 hours'}
+            </Text>
           </Pressable>
         </View>
       </ScrollView>
@@ -1011,6 +1223,16 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '700',
     marginTop: 2,
+  },
+  syncText: {
+    color: '#0c5a41',
+    fontSize: 11,
+    fontWeight: '900',
+    marginTop: 3,
+    textTransform: 'uppercase',
+  },
+  syncTextOffline: {
+    color: '#9f201a',
   },
   iconButton: {
     width: 44,
@@ -1507,6 +1729,10 @@ const styles = StyleSheet.create({
     lineHeight: 20,
     fontWeight: '700',
     textAlignVertical: 'top',
+  },
+  answerInputSaved: {
+    backgroundColor: '#f7f9f4',
+    color: '#3d443c',
   },
   saveButton: {
     flex: 1,

@@ -11,16 +11,16 @@
 - Hosted first-date acceptance
 - Safety pause and dealbreaker visibility
 - Operations dashboard prototype
+- File-backed backend persistence for onboarding, prompt answers, reveal progress, and hosted-date choices
 
 ## Next product steps
 
-1. Persist onboarding profiles and prompt answers in a backend.
-2. Add authentication and private member accounts.
-3. Replace local sample matches with database-backed ranked candidates.
-4. Add real chat with reveal-safe moderation.
-5. Add real voice recording, playback, and consent controls.
-6. Add image upload, verification, and mutual photo reveal.
-7. Add hosted venue/event inventory and booking.
-8. Connect the dashboard to reports, matches, events, and moderation queues.
-9. Add push notifications for prompts, reveals, and date plans.
-10. Prepare deployment for dashboard, API, and mobile builds.
+1. Add authentication and private member accounts.
+2. Replace local sample matches with database-backed ranked candidates.
+3. Add real chat with reveal-safe moderation.
+4. Add real voice recording, playback, and consent controls.
+5. Add image upload, verification, and mutual photo reveal.
+6. Add hosted venue/event inventory and booking.
+7. Connect the dashboard to reports, matches, events, and moderation queues.
+8. Add push notifications for prompts, reveals, and date plans.
+9. Prepare deployment for dashboard, API, and mobile builds.

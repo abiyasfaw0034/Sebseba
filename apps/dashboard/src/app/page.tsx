@@ -1,3 +1,5 @@
+import { readFile } from "fs/promises";
+import path from "path";
 import {
   AlertTriangle,
   Bell,
@@ -19,6 +21,19 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import styles from "./page.module.css";
+
+export const dynamic = "force-dynamic";
+
+type SafetyReview = {
+  id: string;
+  signal: string;
+  owner: string;
+  state: string;
+};
+
+type FlaggedChatReview = SafetyReview & {
+  createdAtTime: number;
+};
 
 const metrics = [
   { label: "Reveal-ready matches", value: "184", trend: "+18%", tone: "good" },
@@ -91,7 +106,7 @@ const prompts = [
   { text: "Pick a meal to share from one mesob.", category: "Food" },
 ];
 
-const safetyReviews = [
+const safetyReviews: SafetyReview[] = [
   { id: "SR-118", signal: "Photo reveal request before prompts", owner: "Hana", state: "Review" },
   { id: "SR-121", signal: "Repeated late cancellation", owner: "Dawit", state: "Watch" },
   { id: "SR-126", signal: "Venue feedback needs follow-up", owner: "Meklit", state: "Open" },
@@ -103,7 +118,83 @@ const events = [
   { title: "Addis Art Walk", time: "Sat, 4:00 PM", seats: "24 seats", fill: "81%" },
 ];
 
-export default function Home() {
+const dataFile = path.join(process.cwd(), ".data", "member-state.json");
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+const asString = (value: unknown, fallback: string, maxLength = 240) => {
+  if (typeof value !== "string") {
+    return fallback;
+  }
+
+  const trimmed = value.trim();
+  return trimmed ? trimmed.slice(0, maxLength) : fallback;
+};
+
+const readFlaggedChatReviews = async (): Promise<SafetyReview[]> => {
+  try {
+    const raw = await readFile(dataFile, "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+
+    if (!isRecord(parsed) || !isRecord(parsed.members)) {
+      return [];
+    }
+
+    const reviews = Object.entries(parsed.members).flatMap<FlaggedChatReview>(([memberId, member]) => {
+      if (!isRecord(member) || !Array.isArray(member.chatMessages)) {
+        return [];
+      }
+
+      return member.chatMessages.flatMap<FlaggedChatReview>((message) => {
+        if (!isRecord(message) || (message.flagged !== true && message.status !== "held")) {
+          return [];
+        }
+
+        const text = asString(message.text, "Message held for review", 90);
+        const matchId = asString(message.matchId, "blind match", 40);
+        const reason = asString(message.flagReason, "host review", 80);
+        const createdAt = asString(message.createdAt, "", 80);
+        const createdAtTime = Number.isNaN(new Date(createdAt).getTime()) ? 0 : new Date(createdAt).getTime();
+
+        return [
+          {
+            id: asString(message.id, `CHAT-${memberId}`, 40),
+            signal: `${matchId}: ${text} (${reason})`,
+            owner: memberId,
+            state: "Held",
+            createdAtTime,
+          },
+        ];
+      });
+    });
+
+    return reviews
+      .sort((first, second) => second.createdAtTime - first.createdAtTime)
+      .slice(0, 4)
+      .map(({ id, signal, owner, state }) => ({ id, signal, owner, state }));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      console.warn("Could not read held chat reviews", error);
+    }
+
+    return [];
+  }
+};
+
+export default async function Home() {
+  const flaggedChatReviews = await readFlaggedChatReviews();
+  const dashboardMetrics = metrics.map((metric) =>
+    metric.label === "Safety reviews"
+      ? {
+          ...metric,
+          value: String(Number(metric.value) + flaggedChatReviews.length),
+          trend: flaggedChatReviews.length ? `${flaggedChatReviews.length} chat holds` : metric.trend,
+        }
+      : metric,
+  );
+  const visibleSafetyReviews = [...flaggedChatReviews, ...safetyReviews].slice(0, 5);
+
   return (
     <div className={styles.shell}>
       <aside className={styles.sidebar} aria-label="Dashboard navigation">
@@ -163,7 +254,7 @@ export default function Home() {
         </header>
 
         <section className={styles.metrics} aria-label="Today metrics">
-          {metrics.map((metric) => (
+          {dashboardMetrics.map((metric) => (
             <article className={styles.metric} data-tone={metric.tone} key={metric.label}>
               <span>{metric.label}</span>
               <strong>{metric.value}</strong>
@@ -287,10 +378,11 @@ export default function Home() {
                 <AlertTriangle size={19} aria-hidden />
               </div>
               <div className={styles.safetyList}>
-                {safetyReviews.map((review) => (
+                {visibleSafetyReviews.map((review) => (
                   <article key={review.id}>
                     <div>
                       <strong>{review.id}</strong>
+                      <small>{review.owner}</small>
                       <p>{review.signal}</p>
                     </div>
                     <span>{review.state}</span>

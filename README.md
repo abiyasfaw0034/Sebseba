@@ -24,7 +24,7 @@ The dashboard app also exposes the prototype member-state backend:
 - `GET /api/member-state?memberId=demo-member`
 - `PUT /api/member-state?memberId=demo-member`
 
-It stores onboarding profiles, prompt answers, reveal progress, voice draft choices, and hosted-date choices in `apps/dashboard/.data/member-state.json`, which is ignored by git.
+It stores onboarding profiles, prompt answers, reveal progress, voice draft choices, hosted-date choices, and reveal-safe chat messages in `apps/dashboard/.data/member-state.json`, which is ignored by git.
 
 Start the dashboard before the mobile app when you want persistence:
 

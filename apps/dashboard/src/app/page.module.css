@@ -528,6 +528,15 @@
   font-size: 13px;
 }
 
+.safetyList small {
+  display: block;
+  color: #0c5a41;
+  font-size: 11px;
+  font-weight: 900;
+  margin-top: 3px;
+  text-transform: uppercase;
+}
+
 .safetyList p {
   color: #4a5249;
   font-size: 13px;

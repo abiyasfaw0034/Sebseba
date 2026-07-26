@@ -59,6 +59,20 @@ type RankedMatch = CandidateMatch & {
   riskConflicts: string[];
 };
 
+type ChatMessageAuthor = 'member' | 'match' | 'host';
+type ChatMessageStatus = 'sent' | 'held';
+
+type ChatMessage = {
+  id: string;
+  matchId: string;
+  author: ChatMessageAuthor;
+  text: string;
+  createdAt: string;
+  flagged: boolean;
+  status: ChatMessageStatus;
+  flagReason?: string;
+};
+
 type PersistedMemberState = {
   memberId?: string;
   onboardingComplete?: boolean;
@@ -74,10 +88,12 @@ type PersistedMemberState = {
   acceptedDatePlan?: boolean;
   photoRevealRequested?: boolean;
   revealPausedUntil?: string | null;
+  chatMessages?: ChatMessage[];
   updatedAt?: string;
 };
 
 type SyncStatus = 'loading' | 'saving' | 'saved' | 'offline';
+type AppTab = 'Match' | 'Talks' | 'Dates' | 'Me';
 
 const defaultOnboardingProfile: OnboardingProfile = {
   intention: 'Long-term',
@@ -276,12 +292,46 @@ const dateSpots = [
   { name: 'Art walk', detail: 'Low pressure weekend plan', icon: 'palette-outline' },
 ];
 
-const tabs = [
+const tabs: { label: AppTab; icon: keyof typeof Ionicons.glyphMap }[] = [
   { label: 'Match', icon: 'heart-outline' },
   { label: 'Talks', icon: 'chatbubble-ellipses-outline' },
   { label: 'Dates', icon: 'calendar-outline' },
   { label: 'Me', icon: 'person-outline' },
 ];
+
+const chatModerationRules = [
+  {
+    label: 'contact detail',
+    pattern:
+      /(\+?\d[\d\s().-]{7,}\d)|\b[\w.-]+@[\w.-]+\.\w{2,}\b|(^|\s)@[a-z0-9_.]{2,}\b/i,
+  },
+  {
+    label: 'off-app request',
+    pattern: /\b(text me|call me|dm me|outside (the )?app|move to|whatsapp|telegram|instagram|snapchat)\b/i,
+  },
+  {
+    label: 'photo pressure',
+    pattern:
+      /\b(send|show|share|drop|need|want)\b.{0,24}\b(photos?|pics?|pictures?|selfie|image)\b|\b(photos?|pics?|pictures?|selfie|image)\b.{0,24}\b(send|show|share|drop)\b/i,
+  },
+  {
+    label: 'boundary pressure',
+    pattern: /\b(skip the host|no host|prove it|right now|don't tell|dont tell)\b/i,
+  },
+];
+
+const getChatModerationTags = (message: string) =>
+  chatModerationRules.filter((rule) => rule.pattern.test(message)).map((rule) => rule.label);
+
+const formatChatTime = (value: string) => {
+  const date = new Date(value);
+
+  if (Number.isNaN(date.getTime())) {
+    return 'Now';
+  }
+
+  return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+};
 
 const memberStateApiBaseUrl = process.env.EXPO_PUBLIC_ABIYASFAW_API_URL?.replace(/\/$/, '') ?? 'http://localhost:3000';
 const memberStateMemberId = process.env.EXPO_PUBLIC_ABIYASFAW_MEMBER_ID?.trim() || 'demo-member';
@@ -391,10 +441,13 @@ export default function App() {
   const [acceptedDatePlan, setAcceptedDatePlan] = useState(false);
   const [photoRevealRequested, setPhotoRevealRequested] = useState(false);
   const [revealPausedUntil, setRevealPausedUntil] = useState<string | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('loading');
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [memberStateLoaded, setMemberStateLoaded] = useState(false);
   const [draft, setDraft] = useState('');
+  const [chatDraft, setChatDraft] = useState('');
+  const [activeTab, setActiveTab] = useState<AppTab>('Match');
   const saveRequestRef = useRef(0);
   const { width } = useWindowDimensions();
 
@@ -436,6 +489,26 @@ export default function App() {
     { label: 'Hosted date accepted', complete: acceptedDatePlan },
   ];
   const canRequestPhotoReveal = revealRequirements.every((requirement) => requirement.complete) && !revealPauseActive;
+  const selectedChatMessages = useMemo(
+    () => chatMessages.filter((message) => message.matchId === selectedMatch.id),
+    [chatMessages, selectedMatch.id],
+  );
+  const selectedHeldChatCount = selectedChatMessages.filter((message) => message.status === 'held').length;
+  const chatDraftModerationTags = getChatModerationTags(chatDraft);
+  const chatQuickStarts = [
+    {
+      label: 'Cue',
+      text: `I liked the ${visibleSelectedCue.toLowerCase()} cue. What would you ask over buna?`,
+    },
+    {
+      label: 'Pace',
+      text: `Your ${selectedMatch.revealPace.toLowerCase()} pace feels comfortable to me too.`,
+    },
+    {
+      label: 'Date',
+      text: `${selectedSpot} sounds relaxed. What kind of first question makes you open up?`,
+    },
+  ];
 
   useEffect(() => {
     let cancelled = false;
@@ -476,6 +549,7 @@ export default function App() {
         setAcceptedDatePlan(Boolean(state.acceptedDatePlan));
         setPhotoRevealRequested(Boolean(state.photoRevealRequested));
         setRevealPausedUntil(state.revealPausedUntil ?? null);
+        setChatMessages(state.chatMessages ?? []);
         setLastSyncedAt(state.updatedAt ?? new Date().toISOString());
         setSyncStatus('saved');
       } catch {
@@ -525,6 +599,7 @@ export default function App() {
         acceptedDatePlan,
         photoRevealRequested,
         revealPausedUntil,
+        chatMessages,
       };
 
       try {
@@ -557,6 +632,7 @@ export default function App() {
   }, [
     acceptedDatePlan,
     activeVoicePromptId,
+    chatMessages,
     memberStateLoaded,
     onboardingComplete,
     onboardingProfile,
@@ -617,6 +693,7 @@ export default function App() {
     setSelectedMatchId(match.id);
     setSelectedCue(match.cues[0]);
     setSelectedSpot(mapDateStyleToSpot(match.dateStyle));
+    setActiveTab('Match');
     setAcceptedDatePlan(false);
     setPhotoRevealRequested(false);
   };
@@ -641,6 +718,30 @@ export default function App() {
     }
 
     setSavedVoicePromptIds((current) => [...current, activeVoicePromptId]);
+  };
+
+  const sendChatMessage = () => {
+    const text = chatDraft.trim().replace(/\s+/g, ' ').slice(0, 500);
+
+    if (!text) {
+      return;
+    }
+
+    const moderationTags = getChatModerationTags(text);
+    const flagged = moderationTags.length > 0;
+    const nextMessage: ChatMessage = {
+      id: `${memberStateMemberId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      matchId: selectedMatch.id,
+      author: 'member',
+      text,
+      createdAt: new Date().toISOString(),
+      flagged,
+      status: flagged ? 'held' : 'sent',
+      flagReason: flagged ? moderationTags.join(' + ') : undefined,
+    };
+
+    setChatMessages((current) => [...current, nextMessage].slice(-120));
+    setChatDraft('');
   };
 
   if (showOnboarding || !onboardingComplete) {
@@ -755,6 +856,157 @@ export default function App() {
           </Pressable>
         </View>
 
+        {activeTab === 'Talks' ? (
+          <>
+            <View style={[styles.card, { width: cardWidth }]}>
+              <View style={styles.sectionHeader}>
+                <View>
+                  <Text style={styles.kicker}>Reveal-safe chat</Text>
+                  <Text style={styles.sectionTitle}>Talk with {selectedMatch.handle}</Text>
+                </View>
+                <Ionicons name="chatbubble-ellipses-outline" size={23} color="#0c5a41" />
+              </View>
+              <View style={styles.chatMatchRow}>
+                <View style={styles.chatAvatar}>
+                  <Text style={styles.chatAvatarText}>{selectedMatch.handle.replace('Match ', '')}</Text>
+                </View>
+                <View style={styles.chatMatchCopy}>
+                  <Text style={styles.rankedName}>{selectedMatch.handle}</Text>
+                  <Text style={styles.rankedMeta}>
+                    {selectedMatch.score}% fit - {selectedMatch.city}
+                  </Text>
+                  <Text style={styles.rankedReason}>{selectedMatch.hostNote}</Text>
+                </View>
+              </View>
+              <View style={styles.guardrailGrid}>
+                <View style={styles.guardrailTile}>
+                  <Ionicons name="call-outline" size={17} color="#0c5a41" />
+                  <Text style={styles.guardrailText}>Contacts held</Text>
+                </View>
+                <View style={styles.guardrailTile}>
+                  <Ionicons name="image-outline" size={17} color="#0c5a41" />
+                  <Text style={styles.guardrailText}>Photo pressure held</Text>
+                </View>
+                <View style={styles.guardrailTile}>
+                  <Ionicons name="shield-checkmark-outline" size={17} color="#0c5a41" />
+                  <Text style={styles.guardrailText}>{selectedHeldChatCount} host holds</Text>
+                </View>
+              </View>
+            </View>
+
+            <View style={[styles.card, { width: cardWidth }]}>
+              <View style={styles.sectionHeader}>
+                <View>
+                  <Text style={styles.kicker}>Conversation</Text>
+                  <Text style={styles.sectionTitle}>
+                    {selectedChatMessages.length ? `${selectedChatMessages.length} messages` : 'Start from a cultural cue'}
+                  </Text>
+                </View>
+                <Ionicons name="lock-closed-outline" size={22} color="#0c5a41" />
+              </View>
+              <View style={styles.chatList}>
+                <View style={[styles.chatBubble, styles.chatBubbleHost]}>
+                  <View style={styles.chatBubbleHeader}>
+                    <Text style={styles.chatAuthor}>Host</Text>
+                    <Text style={styles.chatTime}>Now</Text>
+                  </View>
+                  <Text style={styles.chatMessageText}>
+                    Keep the first thread blind: prompts, voice pace, and hosted-date comfort stay in bounds.
+                  </Text>
+                </View>
+                {selectedChatMessages.length === 0 ? (
+                  <View style={styles.emptyChatBox}>
+                    <Ionicons name="sparkles-outline" size={18} color="#0c5a41" />
+                    <Text style={styles.emptyChatText}>
+                      Try asking about {visibleSelectedCue.toLowerCase()} before any reveal request.
+                    </Text>
+                  </View>
+                ) : null}
+                {selectedChatMessages.map((message) => {
+                  const held = message.status === 'held';
+
+                  return (
+                    <View
+                      key={message.id}
+                      style={[
+                        styles.chatBubble,
+                        message.author === 'member' ? styles.chatBubbleMine : styles.chatBubbleOther,
+                        held ? styles.chatBubbleHeld : null,
+                      ]}
+                    >
+                      <View style={styles.chatBubbleHeader}>
+                        <Text style={styles.chatAuthor}>{message.author === 'member' ? 'You' : selectedMatch.handle}</Text>
+                        <Text style={styles.chatTime}>{formatChatTime(message.createdAt)}</Text>
+                      </View>
+                      <Text style={styles.chatMessageText}>{message.text}</Text>
+                      {held ? (
+                        <View style={styles.heldBadge}>
+                          <Ionicons name="alert-circle-outline" size={14} color="#9f201a" />
+                          <Text style={styles.heldBadgeText}>Held for host: {message.flagReason}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+
+            <View style={[styles.card, { width: cardWidth }]}>
+              <View style={styles.sectionHeader}>
+                <View>
+                  <Text style={styles.kicker}>Message composer</Text>
+                  <Text style={styles.sectionTitle}>Write inside the reveal rules</Text>
+                </View>
+                <Ionicons name="send-outline" size={22} color="#0c5a41" />
+              </View>
+              <View style={styles.quickReplyGrid}>
+                {chatQuickStarts.map((starter) => (
+                  <Pressable
+                    accessibilityRole="button"
+                    key={starter.label}
+                    onPress={() => setChatDraft(starter.text)}
+                    style={styles.quickReplyChip}
+                  >
+                    <Text style={styles.quickReplyLabel}>{starter.label}</Text>
+                  </Pressable>
+                ))}
+              </View>
+              <TextInput
+                maxLength={500}
+                multiline
+                onChangeText={setChatDraft}
+                placeholder="Send a blind-first message"
+                placeholderTextColor="#7a8377"
+                style={styles.answerInput}
+                value={chatDraft}
+              />
+              <View style={[styles.moderationBox, chatDraftModerationTags.length ? styles.moderationBoxHeld : null]}>
+                <Ionicons
+                  name={chatDraftModerationTags.length ? 'alert-circle-outline' : 'checkmark-circle'}
+                  size={17}
+                  color={chatDraftModerationTags.length ? '#9f201a' : '#0c5a41'}
+                />
+                <Text style={[styles.moderationText, chatDraftModerationTags.length ? styles.moderationTextHeld : null]}>
+                  {chatDraftModerationTags.length
+                    ? `Will be held: ${chatDraftModerationTags.join(', ')}`
+                    : 'Ready for blind-safe delivery'}
+                </Text>
+              </View>
+              <Pressable
+                accessibilityRole="button"
+                disabled={!chatDraft.trim()}
+                onPress={sendChatMessage}
+                style={[styles.saveButton, !chatDraft.trim() ? styles.buttonDisabled : null]}
+              >
+                <Ionicons name="send-outline" size={17} color="#ffffff" />
+                <Text style={styles.saveButtonText}>
+                  {chatDraftModerationTags.length ? 'Send to host review' : 'Send message'}
+                </Text>
+              </Pressable>
+            </View>
+          </>
+        ) : (
+          <>
         <View style={[styles.card, { width: cardWidth }]}>
           <View style={styles.sectionHeader}>
             <View>
@@ -1174,19 +1426,31 @@ export default function App() {
             </Text>
           </Pressable>
         </View>
+          </>
+        )}
       </ScrollView>
 
       <View style={styles.tabBar}>
-        {tabs.map((tab, index) => (
-          <Pressable key={tab.label} accessibilityRole="button" style={styles.tabItem}>
-            <Ionicons
-              name={tab.icon as keyof typeof Ionicons.glyphMap}
-              size={21}
-              color={index === 0 ? '#c62b23' : '#667064'}
-            />
-            <Text style={[styles.tabText, index === 0 ? styles.tabTextActive : null]}>{tab.label}</Text>
-          </Pressable>
-        ))}
+        {tabs.map((tab) => {
+          const active = tab.label === activeTab || (activeTab === 'Match' && tab.label === 'Match');
+          const selectableTab = tab.label === 'Talks' ? 'Talks' : 'Match';
+
+          return (
+            <Pressable
+              key={tab.label}
+              accessibilityRole="button"
+              onPress={() => setActiveTab(selectableTab)}
+              style={styles.tabItem}
+            >
+              <Ionicons
+                name={tab.icon as keyof typeof Ionicons.glyphMap}
+                size={21}
+                color={active ? '#c62b23' : '#667064'}
+              />
+              <Text style={[styles.tabText, active ? styles.tabTextActive : null]}>{tab.label}</Text>
+            </Pressable>
+          );
+        })}
       </View>
     </SafeAreaView>
   );
@@ -1550,6 +1814,174 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 18,
     fontWeight: '800',
+  },
+  chatMatchRow: {
+    minHeight: 82,
+    borderRadius: 8,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: '#f7f9f4',
+  },
+  chatAvatar: {
+    width: 54,
+    height: 54,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#1f241f',
+  },
+  chatAvatarText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  chatMatchCopy: {
+    flex: 1,
+    gap: 2,
+  },
+  guardrailGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  guardrailTile: {
+    minHeight: 38,
+    borderRadius: 8,
+    paddingHorizontal: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 7,
+    backgroundColor: '#edf1ea',
+  },
+  guardrailText: {
+    color: '#2f362f',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  chatList: {
+    gap: 10,
+  },
+  chatBubble: {
+    maxWidth: '92%',
+    minHeight: 68,
+    borderRadius: 8,
+    padding: 12,
+    gap: 7,
+    backgroundColor: '#f7f9f4',
+  },
+  chatBubbleMine: {
+    alignSelf: 'flex-end',
+    backgroundColor: '#edf1ea',
+  },
+  chatBubbleOther: {
+    alignSelf: 'flex-start',
+  },
+  chatBubbleHost: {
+    alignSelf: 'stretch',
+    maxWidth: '100%',
+    backgroundColor: '#f0d478',
+  },
+  chatBubbleHeld: {
+    backgroundColor: 'rgba(198, 43, 35, 0.1)',
+  },
+  chatBubbleHeader: {
+    minHeight: 18,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  chatAuthor: {
+    color: '#0c5a41',
+    fontSize: 11,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  chatTime: {
+    color: '#667064',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  chatMessageText: {
+    color: '#2f362f',
+    fontSize: 14,
+    lineHeight: 20,
+    fontWeight: '700',
+  },
+  emptyChatBox: {
+    minHeight: 54,
+    borderRadius: 8,
+    padding: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 9,
+    backgroundColor: '#edf1ea',
+  },
+  emptyChatText: {
+    flex: 1,
+    color: '#3d443c',
+    fontSize: 13,
+    lineHeight: 18,
+    fontWeight: '800',
+  },
+  heldBadge: {
+    minHeight: 28,
+    borderRadius: 8,
+    paddingHorizontal: 9,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    backgroundColor: '#ffffff',
+  },
+  heldBadgeText: {
+    flex: 1,
+    color: '#9f201a',
+    fontSize: 11,
+    lineHeight: 15,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  quickReplyGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+  },
+  quickReplyChip: {
+    minHeight: 36,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#edf1ea',
+  },
+  quickReplyLabel: {
+    color: '#0c5a41',
+    fontSize: 12,
+    fontWeight: '900',
+  },
+  moderationBox: {
+    minHeight: 44,
+    borderRadius: 8,
+    padding: 10,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: '#edf1ea',
+  },
+  moderationBoxHeld: {
+    backgroundColor: 'rgba(198, 43, 35, 0.1)',
+  },
+  moderationText: {
+    flex: 1,
+    color: '#2f362f',
+    fontSize: 12,
+    lineHeight: 17,
+    fontWeight: '900',
+  },
+  moderationTextHeld: {
+    color: '#9f201a',
   },
   lensGrid: {
     gap: 8,

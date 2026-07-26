@@ -10,14 +10,16 @@
 - Photo reveal request rules
 - Hosted first-date acceptance
 - Safety pause and dealbreaker visibility
+- Reveal-safe chat composer with contact/photo-pressure moderation holds
 - Operations dashboard prototype
-- File-backed backend persistence for onboarding, prompt answers, reveal progress, and hosted-date choices
+- File-backed backend persistence for onboarding, prompt answers, reveal progress, hosted-date choices, and chat messages
+- Dashboard safety board intake for held chat messages
 
 ## Next product steps
 
 1. Add authentication and private member accounts.
 2. Replace local sample matches with database-backed ranked candidates.
-3. Add real chat with reveal-safe moderation.
+3. Upgrade prototype chat to real-time delivery with member-to-member replies.
 4. Add real voice recording, playback, and consent controls.
 5. Add image upload, verification, and mutual photo reveal.
 6. Add hosted venue/event inventory and booking.

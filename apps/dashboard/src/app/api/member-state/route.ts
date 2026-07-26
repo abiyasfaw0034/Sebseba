@@ -16,6 +16,20 @@ type OnboardingProfile = {
   dealbreakers: string[];
 };
 
+type ChatMessageAuthor = "member" | "match" | "host";
+type ChatMessageStatus = "sent" | "held";
+
+type ChatMessage = {
+  id: string;
+  matchId: string;
+  author: ChatMessageAuthor;
+  text: string;
+  createdAt: string;
+  flagged: boolean;
+  status: ChatMessageStatus;
+  flagReason?: string;
+};
+
 type MemberState = {
   memberId: string;
   onboardingComplete: boolean;
@@ -31,6 +45,7 @@ type MemberState = {
   acceptedDatePlan: boolean;
   photoRevealRequested: boolean;
   revealPausedUntil: string | null;
+  chatMessages: ChatMessage[];
   createdAt: string;
   updatedAt: string;
 };
@@ -52,6 +67,27 @@ const defaultProfile: OnboardingProfile = {
 
 const dataDirectory = path.join(process.cwd(), ".data");
 const dataFile = path.join(dataDirectory, "member-state.json");
+
+const chatModerationRules = [
+  {
+    label: "contact detail",
+    pattern:
+      /(\+?\d[\d\s().-]{7,}\d)|\b[\w.-]+@[\w.-]+\.\w{2,}\b|(^|\s)@[a-z0-9_.]{2,}\b/i,
+  },
+  {
+    label: "off-app request",
+    pattern: /\b(text me|call me|dm me|outside (the )?app|move to|whatsapp|telegram|instagram|snapchat)\b/i,
+  },
+  {
+    label: "photo pressure",
+    pattern:
+      /\b(send|show|share|drop|need|want)\b.{0,24}\b(photos?|pics?|pictures?|selfie|image)\b|\b(photos?|pics?|pictures?|selfie|image)\b.{0,24}\b(send|show|share|drop)\b/i,
+  },
+  {
+    label: "boundary pressure",
+    pattern: /\b(skip the host|no host|prove it|right now|don't tell|dont tell)\b/i,
+  },
+];
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
@@ -95,6 +131,9 @@ const asStringArray = (value: unknown, fallback: string[], maxItems = 12) => {
 const asBoolean = (value: unknown, fallback: boolean) =>
   typeof value === "boolean" ? value : fallback;
 
+const asChatAuthor = (value: unknown): ChatMessageAuthor =>
+  value === "match" || value === "host" || value === "member" ? value : "member";
+
 const normalizeMemberId = (value: unknown) => {
   const candidate = asString(value, "demo-member", 64);
   return /^[a-zA-Z0-9_.:-]+$/.test(candidate) ? candidate : "demo-member";
@@ -134,6 +173,47 @@ const normalizePromptAnswers = (value: unknown, fallback: Record<string, string>
   }, {});
 };
 
+const getChatModerationTags = (message: string) =>
+  chatModerationRules.filter((rule) => rule.pattern.test(message)).map((rule) => rule.label);
+
+const normalizeChatMessages = (value: unknown, fallback: ChatMessage[]) => {
+  if (!Array.isArray(value)) {
+    return fallback;
+  }
+
+  const messages = value.reduce<ChatMessage[]>((normalized, item) => {
+    if (!isRecord(item)) {
+      return normalized;
+    }
+
+    const text = asString(item.text, "", 500);
+
+    if (!text) {
+      return normalized;
+    }
+
+    const moderationTags = getChatModerationTags(text);
+    const flagged = asBoolean(item.flagged, false) || item.status === "held" || moderationTags.length > 0;
+    const fallbackFlagReason = moderationTags.join(" + ");
+    const flagReason = flagged ? asString(item.flagReason, fallbackFlagReason || "host review", 160) : undefined;
+
+    normalized.push({
+      id: asString(item.id, `chat-${normalized.length + 1}`, 120),
+      matchId: asString(item.matchId, "AB-024", 80),
+      author: asChatAuthor(item.author),
+      text,
+      createdAt: asNullableIsoString(item.createdAt) ?? new Date().toISOString(),
+      flagged,
+      status: flagged ? "held" : "sent",
+      flagReason,
+    });
+
+    return normalized;
+  }, []);
+
+  return messages.slice(-120);
+};
+
 const createDefaultState = (memberId: string, timestamp = new Date().toISOString()): MemberState => ({
   memberId,
   onboardingComplete: false,
@@ -149,6 +229,7 @@ const createDefaultState = (memberId: string, timestamp = new Date().toISOString
   acceptedDatePlan: false,
   photoRevealRequested: false,
   revealPausedUntil: null,
+  chatMessages: [],
   createdAt: timestamp,
   updatedAt: timestamp,
 });
@@ -173,6 +254,7 @@ const normalizeState = (memberId: string, value: unknown, fallback = createDefau
     acceptedDatePlan: asBoolean(input.acceptedDatePlan, fallback.acceptedDatePlan),
     photoRevealRequested: asBoolean(input.photoRevealRequested, fallback.photoRevealRequested),
     revealPausedUntil: asNullableIsoString(input.revealPausedUntil) ?? fallback.revealPausedUntil,
+    chatMessages: normalizeChatMessages(input.chatMessages, fallback.chatMessages),
     createdAt: asNullableIsoString(input.createdAt) ?? fallback.createdAt,
     updatedAt: asNullableIsoString(input.updatedAt) ?? fallback.updatedAt,
   };

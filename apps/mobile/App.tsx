@@ -87,6 +87,8 @@ type PersistedMemberState = {
   savedVoicePromptIds?: string[];
   acceptedDatePlan?: boolean;
   photoRevealRequested?: boolean;
+  matchRevealConsentGranted?: boolean;
+  photoRevealOpened?: boolean;
   revealPausedUntil?: string | null;
   chatMessages?: ChatMessage[];
   updatedAt?: string;
@@ -440,6 +442,8 @@ export default function App() {
   const [savedVoicePromptIds, setSavedVoicePromptIds] = useState<string[]>([]);
   const [acceptedDatePlan, setAcceptedDatePlan] = useState(false);
   const [photoRevealRequested, setPhotoRevealRequested] = useState(false);
+  const [matchRevealConsentGranted, setMatchRevealConsentGranted] = useState(false);
+  const [photoRevealOpened, setPhotoRevealOpened] = useState(false);
   const [revealPausedUntil, setRevealPausedUntil] = useState<string | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('loading');
@@ -489,6 +493,7 @@ export default function App() {
     { label: 'Hosted date accepted', complete: acceptedDatePlan },
   ];
   const canRequestPhotoReveal = revealRequirements.every((requirement) => requirement.complete) && !revealPauseActive;
+  const revealGateReady = canRequestPhotoReveal && photoRevealRequested && matchRevealConsentGranted;
   const selectedChatMessages = useMemo(
     () => chatMessages.filter((message) => message.matchId === selectedMatch.id),
     [chatMessages, selectedMatch.id],
@@ -548,6 +553,8 @@ export default function App() {
         setSavedVoicePromptIds(state.savedVoicePromptIds ?? []);
         setAcceptedDatePlan(Boolean(state.acceptedDatePlan));
         setPhotoRevealRequested(Boolean(state.photoRevealRequested));
+        setMatchRevealConsentGranted(Boolean(state.matchRevealConsentGranted));
+        setPhotoRevealOpened(Boolean(state.photoRevealOpened));
         setRevealPausedUntil(state.revealPausedUntil ?? null);
         setChatMessages(state.chatMessages ?? []);
         setLastSyncedAt(state.updatedAt ?? new Date().toISOString());
@@ -598,6 +605,8 @@ export default function App() {
         savedVoicePromptIds,
         acceptedDatePlan,
         photoRevealRequested,
+        matchRevealConsentGranted,
+        photoRevealOpened,
         revealPausedUntil,
         chatMessages,
       };
@@ -633,6 +642,8 @@ export default function App() {
     acceptedDatePlan,
     activeVoicePromptId,
     chatMessages,
+    matchRevealConsentGranted,
+    photoRevealOpened,
     memberStateLoaded,
     onboardingComplete,
     onboardingProfile,
@@ -679,6 +690,8 @@ export default function App() {
       setSelectedSpot(mapDateStyleToSpot(onboardingProfile.dateStyle));
       setAcceptedDatePlan(false);
       setPhotoRevealRequested(false);
+      setMatchRevealConsentGranted(false);
+      setPhotoRevealOpened(false);
       return;
     }
 
@@ -696,6 +709,8 @@ export default function App() {
     setActiveTab('Match');
     setAcceptedDatePlan(false);
     setPhotoRevealRequested(false);
+    setMatchRevealConsentGranted(false);
+    setPhotoRevealOpened(false);
   };
 
   const saveAnswer = () => {
@@ -718,6 +733,31 @@ export default function App() {
     }
 
     setSavedVoicePromptIds((current) => [...current, activeVoicePromptId]);
+  };
+
+  const requestPhotoReveal = () => {
+    if (!canRequestPhotoReveal || photoRevealRequested) {
+      return;
+    }
+
+    setPhotoRevealRequested(true);
+    setPhotoRevealOpened(false);
+    setMatchRevealConsentGranted(false);
+  };
+
+  const grantMatchRevealConsent = () => {
+    if (!photoRevealRequested || revealPauseActive) {
+      return;
+    }
+
+    setMatchRevealConsentGranted(true);
+    setPhotoRevealOpened(true);
+  };
+
+  const resetPhotoRevealConsent = () => {
+    setPhotoRevealRequested(false);
+    setMatchRevealConsentGranted(false);
+    setPhotoRevealOpened(false);
   };
 
   const sendChatMessage = () => {

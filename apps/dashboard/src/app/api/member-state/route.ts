@@ -44,6 +44,8 @@ type MemberState = {
   savedVoicePromptIds: string[];
   acceptedDatePlan: boolean;
   photoRevealRequested: boolean;
+  matchRevealConsentGranted: boolean;
+  photoRevealOpened: boolean;
   revealPausedUntil: string | null;
   chatMessages: ChatMessage[];
   createdAt: string;
@@ -228,6 +230,8 @@ const createDefaultState = (memberId: string, timestamp = new Date().toISOString
   savedVoicePromptIds: [],
   acceptedDatePlan: false,
   photoRevealRequested: false,
+  matchRevealConsentGranted: false,
+  photoRevealOpened: false,
   revealPausedUntil: null,
   chatMessages: [],
   createdAt: timestamp,
@@ -238,6 +242,10 @@ const normalizeState = (memberId: string, value: unknown, fallback = createDefau
   const input = isRecord(value) ? value : {};
   const promptAnswers = normalizePromptAnswers(input.promptAnswers, fallback.promptAnswers);
   const answeredPromptIds = asStringArray(input.answeredPromptIds, fallback.answeredPromptIds, 24);
+  const photoRevealRequested = asBoolean(input.photoRevealRequested, fallback.photoRevealRequested);
+  const matchRevealConsentGranted =
+    photoRevealRequested && asBoolean(input.matchRevealConsentGranted, fallback.matchRevealConsentGranted);
+  const photoRevealOpened = matchRevealConsentGranted && asBoolean(input.photoRevealOpened, fallback.photoRevealOpened);
 
   return {
     memberId,
@@ -252,7 +260,9 @@ const normalizeState = (memberId: string, value: unknown, fallback = createDefau
     activeVoicePromptId: asString(input.activeVoicePromptId, fallback.activeVoicePromptId, 80),
     savedVoicePromptIds: asStringArray(input.savedVoicePromptIds, fallback.savedVoicePromptIds, 24),
     acceptedDatePlan: asBoolean(input.acceptedDatePlan, fallback.acceptedDatePlan),
-    photoRevealRequested: asBoolean(input.photoRevealRequested, fallback.photoRevealRequested),
+    photoRevealRequested,
+    matchRevealConsentGranted,
+    photoRevealOpened,
     revealPausedUntil: asNullableIsoString(input.revealPausedUntil) ?? fallback.revealPausedUntil,
     chatMessages: normalizeChatMessages(input.chatMessages, fallback.chatMessages),
     createdAt: asNullableIsoString(input.createdAt) ?? fallback.createdAt,

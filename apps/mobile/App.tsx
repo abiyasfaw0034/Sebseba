@@ -1089,12 +1089,16 @@ export default function App() {
           imageStyle={styles.heroImage}
           style={[styles.hero, { width: cardWidth }]}
         >
-          <View style={styles.heroShade}>
+          <View style={[styles.heroShade, photoRevealOpened ? styles.heroShadeRevealed : null]}>
             <View style={styles.heroTop}>
               <View style={styles.statusPill}>
-                <Ionicons name={photoRevealRequested ? 'image-outline' : 'eye-off-outline'} size={14} color="#ffffff" />
+                <Ionicons
+                  name={photoRevealOpened ? 'eye-outline' : photoRevealRequested ? 'image-outline' : 'eye-off-outline'}
+                  size={14}
+                  color="#ffffff"
+                />
                 <Text style={styles.statusPillText}>
-                  {photoRevealRequested ? 'Reveal requested' : 'Blind profile'}
+                  {photoRevealOpened ? 'Photo revealed' : photoRevealRequested ? 'Reveal requested' : 'Blind profile'}
                 </Text>
               </View>
               <Text style={styles.fitScore}>{selectedMatch.score}%</Text>
@@ -1200,11 +1204,13 @@ export default function App() {
               <Text style={styles.sectionTitle}>
                 {revealPauseActive
                   ? 'Reveal pause active'
-                  : photoRevealRequested
-                    ? 'Waiting for mutual approval'
-                    : canRequestPhotoReveal
-                      ? 'Ready to request reveal'
-                      : 'Still blind by design'}
+                  : revealGateReady
+                    ? 'Photos are open'
+                    : photoRevealRequested
+                      ? 'Waiting for mutual approval'
+                      : canRequestPhotoReveal
+                        ? 'Ready to request reveal'
+                        : 'Still blind by design'}
               </Text>
             </View>
             <Ionicons name="lock-closed-outline" size={23} color="#0c5a41" />
@@ -1221,20 +1227,66 @@ export default function App() {
               </View>
             ))}
           </View>
-          <Pressable
-            accessibilityRole="button"
-            disabled={!canRequestPhotoReveal || photoRevealRequested}
-            onPress={() => setPhotoRevealRequested(true)}
-            style={[
-              styles.saveButton,
-              !canRequestPhotoReveal || photoRevealRequested ? styles.buttonDisabled : null,
-            ]}
-          >
-            <Ionicons name="image-outline" size={17} color="#ffffff" />
-            <Text style={styles.saveButtonText}>
-              {revealPauseActive ? 'Reveal paused' : photoRevealRequested ? 'Reveal requested' : 'Request photo reveal'}
-            </Text>
-          </Pressable>
+          {photoRevealRequested ? (
+            <View style={styles.unlockList}>
+              <View style={styles.unlockRow}>
+                <Ionicons name="checkmark-circle" size={18} color="#0c5a41" />
+                <Text style={styles.unlockText}>You requested the reveal</Text>
+              </View>
+              <View style={styles.unlockRow}>
+                <Ionicons
+                  name={matchRevealConsentGranted ? 'checkmark-circle' : 'ellipse-outline'}
+                  size={18}
+                  color={matchRevealConsentGranted ? '#0c5a41' : '#667064'}
+                />
+                <Text style={styles.unlockText}>
+                  {matchRevealConsentGranted
+                    ? `${selectedMatch.handle} agreed to reveal`
+                    : `Waiting for ${selectedMatch.handle} to agree`}
+                </Text>
+              </View>
+            </View>
+          ) : null}
+
+          {revealGateReady ? (
+            <View style={styles.hostNoteBox}>
+              <Ionicons name="eye-outline" size={18} color="#0c5a41" />
+              <Text style={styles.hostNoteText}>
+                Photos are open for both of you. The reveal stays mutual - either person can re-blind or pause it.
+              </Text>
+            </View>
+          ) : null}
+
+          {!photoRevealRequested ? (
+            <Pressable
+              accessibilityRole="button"
+              disabled={!canRequestPhotoReveal}
+              onPress={requestPhotoReveal}
+              style={[styles.saveButton, !canRequestPhotoReveal ? styles.buttonDisabled : null]}
+            >
+              <Ionicons name="image-outline" size={17} color="#ffffff" />
+              <Text style={styles.saveButtonText}>
+                {revealPauseActive ? 'Reveal paused' : 'Request photo reveal'}
+              </Text>
+            </Pressable>
+          ) : !matchRevealConsentGranted ? (
+            <Pressable
+              accessibilityRole="button"
+              disabled={revealPauseActive}
+              onPress={grantMatchRevealConsent}
+              style={[styles.saveButton, revealPauseActive ? styles.buttonDisabled : null]}
+            >
+              <Ionicons name="heart-outline" size={17} color="#ffffff" />
+              <Text style={styles.saveButtonText}>
+                {revealPauseActive ? 'Reveal paused' : `Confirm ${selectedMatch.handle} agrees`}
+              </Text>
+            </Pressable>
+          ) : (
+            <Pressable accessibilityRole="button" onPress={resetPhotoRevealConsent} style={styles.reportButton}>
+              <Ionicons name="eye-off-outline" size={18} color="#1f241f" />
+              <Text style={styles.reportButtonText}>Re-blind this match</Text>
+            </Pressable>
+          )}
         </View>
 
         <View style={[styles.card, { width: cardWidth }]}>
@@ -1394,7 +1446,7 @@ export default function App() {
                 onPress={() => {
                   setSelectedSpot(spot.name);
                   setAcceptedDatePlan(false);
-                  setPhotoRevealRequested(false);
+                  resetPhotoRevealConsent();
                 }}
                 style={[styles.spotRow, active ? styles.spotRowActive : null]}
               >
@@ -1416,7 +1468,7 @@ export default function App() {
             accessibilityRole="button"
             onPress={() => {
               setAcceptedDatePlan(true);
-              setPhotoRevealRequested(false);
+              resetPhotoRevealConsent();
             }}
             style={styles.saveButton}
           >
@@ -1456,7 +1508,7 @@ export default function App() {
             accessibilityRole="button"
             onPress={() => {
               setRevealPausedUntil(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString());
-              setPhotoRevealRequested(false);
+              resetPhotoRevealConsent();
             }}
             style={styles.reportButton}
           >
@@ -1764,6 +1816,9 @@ const styles = StyleSheet.create({
     padding: 16,
     justifyContent: 'space-between',
     backgroundColor: 'rgba(18, 21, 18, 0.28)',
+  },
+  heroShadeRevealed: {
+    backgroundColor: 'rgba(18, 21, 18, 0.1)',
   },
   heroTop: {
     flexDirection: 'row',

@@ -15,7 +15,9 @@ Expo React Native prototype for the member-facing blind match experience.
 - Voice reveal readiness
 - Photo reveal rules gated by prompts, voice intro, and hosted date acceptance
 - Hosted first-date choices
+- Mutual photo-reveal consent flow (request, mutual approval, re-blind)
 - Safety pause control
+- Email/password sign-in and registration with a private per-account session
 - Backend-backed profile and prompt answer persistence when the dashboard API is running
 
 ## Run
@@ -34,8 +36,16 @@ npm run mobile:start
 npm run mobile:web
 ```
 
+## Accounts
+
+The app now requires a member account. On first launch you register or sign in
+with an email and password; the session token is stored in `expo-secure-store`
+(the device keychain, or `localStorage` on web) and restored on the next launch.
+Member state is private to the signed-in account. Start the dashboard API with
+`npm run dev` from the repository root so registration and sign-in work.
+
 ## Persistence
 
-The app saves member state to the dashboard API at `http://localhost:3000/api/member-state` by default. Start the dashboard with `npm run dev` from the repository root before running Expo.
+The app saves member state to the dashboard API at `http://localhost:3000/api/member-state` by default. Every request is authenticated with the session token, and the member is derived from that token (no member id is sent in the URL).
 
-For device testing, set `EXPO_PUBLIC_ABIYASFAW_API_URL` to a reachable dashboard URL, for example `http://192.168.1.25:3000`. Use `EXPO_PUBLIC_ABIYASFAW_MEMBER_ID` to test multiple saved member profiles.
+For device testing, set `EXPO_PUBLIC_ABIYASFAW_API_URL` to a reachable dashboard URL, for example `http://192.168.1.25:3000`. To test multiple members, register more than one account and sign in as each.

@@ -7,7 +7,6 @@ import {
   ImageBackground,
   Platform,
   Pressable,
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -15,6 +14,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 
 type OnboardingProfile = {
   intention: string;
@@ -340,9 +340,69 @@ const formatChatTime = (value: string) => {
 
 const apiBaseUrl = process.env.EXPO_PUBLIC_ABIYASFAW_API_URL?.replace(/\/$/, '') ?? 'http://localhost:3000';
 const memberStateEndpoint = `${apiBaseUrl}/api/member-state`;
+const candidatesEndpoint = `${apiBaseUrl}/api/candidates`;
 const authRegisterEndpoint = `${apiBaseUrl}/api/auth/register`;
 const authLoginEndpoint = `${apiBaseUrl}/api/auth/login`;
 const authSessionEndpoint = `${apiBaseUrl}/api/auth/session`;
+
+type CandidateSummary = {
+  id: string;
+  profile: OnboardingProfile;
+  answeredPromptCount: number;
+};
+
+const cueByDateStyle: Record<string, string> = {
+  'Buna first': 'Buna conversation',
+  'Mesob dinner': 'Mesob dining',
+  'Art walk': 'Old city walks',
+  'Live music': 'Ethio-jazz',
+  'Community event': 'Community events',
+};
+
+const cueByFaith: Record<string, string> = {
+  'Faith is central': 'Faith routines',
+  'Respectful of faith routines': 'Orthodox holidays',
+  'Open, not defining': 'Open conversations',
+  'Prefer secular dating': 'City life',
+};
+
+const buildCuesFromProfile = (profile: OnboardingProfile): string[] => {
+  const cues = [
+    cueByDateStyle[profile.dateStyle] ?? 'Buna conversation',
+    cueByFaith[profile.faithComfort] ?? 'Family stories',
+    profile.languages[0] ? `${profile.languages[0]} chats` : 'Language games',
+    'Family stories',
+  ];
+  return Array.from(new Set(cues)).slice(0, 4);
+};
+
+// Turns another member's onboarding profile into a blind-match card. Curated fields
+// (handle, cues, intro) are synthesized from their profile since real members do not
+// carry the hand-authored copy the seed samples have.
+const buildCandidateFromSummary = (summary: CandidateSummary): CandidateMatch => {
+  const profile = summary.profile;
+  const suffix = (summary.id.replace(/[^a-zA-Z0-9]/g, '').slice(-4) || 'MTCH').toUpperCase();
+  const prompts = summary.answeredPromptCount;
+
+  return {
+    id: summary.id,
+    handle: `Match ${suffix}`,
+    city: profile.city,
+    distance: profile.city === 'Diaspora' ? 'Remote first' : 'Nearby',
+    intention: profile.intention,
+    languages: profile.languages,
+    faithComfort: profile.faithComfort,
+    familyExpectation: profile.familyExpectation,
+    revealPace: profile.revealPace,
+    dateStyle: profile.dateStyle,
+    dealbreakers: profile.dealbreakers,
+    riskSignals: [],
+    cues: buildCuesFromProfile(profile),
+    intro: `${profile.intention} in ${profile.city}. Prefers ${profile.revealPace.toLowerCase()} and a ${profile.dateStyle.toLowerCase()} first date.`,
+    hostNote: `${prompts} prompt${prompts === 1 ? '' : 's'} answered. A host can open a voice intro once you both feel ready.`,
+    voicePrompt: 'Share a short story about a song, place, or meal that feels like home.',
+  };
+};
 
 const sessionTokenKey = 'abiyasfaw_session_token';
 // SecureStore is unavailable on web; fall back to localStorage there, with an in-memory mirror everywhere.
@@ -487,7 +547,33 @@ const rankCandidate = (user: OnboardingProfile, candidate: CandidateMatch): Rank
   };
 };
 
-export default function App() {
+const matchReplyOpeners = [
+  'That is a warm way to put it.',
+  'I love that you asked that.',
+  'That question makes me smile.',
+  'You read the room well.',
+  'That is exactly my kind of question.',
+];
+
+const matchReplyClosers = [
+  'what first pulled you toward it?',
+  'what would you want to hear back?',
+  'how did that become important to you?',
+  'what does a good version of that look like for you?',
+  'what would make you feel at ease sharing more?',
+];
+
+// Prototype stand-in for the other member: a reveal-safe, on-topic reply so a
+// conversation can actually happen before real member-to-member delivery exists.
+const buildMatchReply = (match: CandidateMatch, memberText: string): string => {
+  const seed = memberText.trim().length;
+  const cue = match.cues.length ? match.cues[seed % match.cues.length] : 'this';
+  const opener = matchReplyOpeners[seed % matchReplyOpeners.length];
+  const closer = matchReplyClosers[seed % matchReplyClosers.length];
+  return `${opener} ${cue} is close to my heart too — ${closer}`;
+};
+
+function AppContent() {
   const [showOnboarding, setShowOnboarding] = useState(true);
   const [onboardingComplete, setOnboardingComplete] = useState(false);
   const [onboardingIndex, setOnboardingIndex] = useState(0);
@@ -512,6 +598,7 @@ export default function App() {
   const [draft, setDraft] = useState('');
   const [chatDraft, setChatDraft] = useState('');
   const [activeTab, setActiveTab] = useState<AppTab>('Match');
+  const [remoteCandidates, setRemoteCandidates] = useState<CandidateMatch[]>([]);
   const [authStatus, setAuthStatus] = useState<AuthStatus>('checking');
   const [authToken, setAuthToken] = useState<string | null>(null);
   const [authMemberId, setAuthMemberId] = useState<string | null>(null);
@@ -522,12 +609,16 @@ export default function App() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const saveRequestRef = useRef(0);
+  const replyTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const { width } = useWindowDimensions();
 
   const cardWidth = useMemo(() => Math.min(width - 32, 430), [width]);
+  // Real members (from the backend) when any exist; the seed samples otherwise.
+  const activeCandidates = remoteCandidates.length > 0 ? remoteCandidates : candidateMatches;
+  const usingRemoteCandidates = remoteCandidates.length > 0;
   const rankedMatches = useMemo(
-    () => candidateMatches.map((candidate) => rankCandidate(onboardingProfile, candidate)).sort((a, b) => b.score - a.score),
-    [onboardingProfile],
+    () => activeCandidates.map((candidate) => rankCandidate(onboardingProfile, candidate)).sort((a, b) => b.score - a.score),
+    [activeCandidates, onboardingProfile],
   );
   const selectedMatch = rankedMatches.find((match) => match.id === selectedMatchId) ?? rankedMatches[0];
   const visibleSelectedCue = selectedMatch.cues.includes(selectedCue) ? selectedCue : selectedMatch.cues[0];
@@ -724,8 +815,57 @@ export default function App() {
   }, [authToken]);
 
   useEffect(() => {
+    if (!authToken) {
+      setRemoteCandidates([]);
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const loadCandidates = async () => {
+      try {
+        const response = await fetch(candidatesEndpoint, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+
+        if (!response.ok) {
+          throw new Error(`Candidate load failed: ${response.status}`);
+        }
+
+        const data = (await response.json()) as { candidates?: CandidateSummary[] };
+        const summaries = Array.isArray(data.candidates) ? data.candidates : [];
+        const candidates = summaries
+          .filter((summary) => summary && typeof summary.id === 'string' && summary.profile)
+          .map(buildCandidateFromSummary);
+
+        if (!cancelled) {
+          setRemoteCandidates(candidates);
+        }
+      } catch {
+        if (!cancelled) {
+          setRemoteCandidates([]);
+        }
+      }
+    };
+
+    loadCandidates();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken]);
+
+  useEffect(() => {
     setDraft(promptAnswers[selectedPrompt] ?? '');
   }, [promptAnswers, selectedPrompt]);
+
+  useEffect(
+    () => () => {
+      replyTimeoutsRef.current.forEach((handle) => clearTimeout(handle));
+      replyTimeoutsRef.current = [];
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!memberStateLoaded || !authToken) {
@@ -936,6 +1076,29 @@ export default function App() {
 
     setChatMessages((current) => [...current, nextMessage].slice(-120));
     setChatDraft('');
+
+    // Held messages wait for host review, so the match should not reply to them.
+    if (flagged) {
+      return;
+    }
+
+    const replyMatch = selectedMatch;
+    const timeout = setTimeout(() => {
+      const replyMessage: ChatMessage = {
+        id: `${replyMatch.id}-reply-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        matchId: replyMatch.id,
+        author: 'match',
+        text: buildMatchReply(replyMatch, text),
+        createdAt: new Date().toISOString(),
+        flagged: false,
+        status: 'sent',
+      };
+
+      setChatMessages((current) => [...current, replyMessage].slice(-120));
+      replyTimeoutsRef.current = replyTimeoutsRef.current.filter((handle) => handle !== timeout);
+    }, 1200);
+
+    replyTimeoutsRef.current = [...replyTimeoutsRef.current, timeout];
   };
 
   const toggleAuthMode = () => {
@@ -1370,13 +1533,17 @@ export default function App() {
               </Pressable>
             </View>
           </>
-        ) : (
+        ) : null}
+
+        {activeTab === 'Match' ? (
           <>
         <View style={[styles.card, { width: cardWidth }]}>
           <View style={styles.sectionHeader}>
             <View>
               <Text style={styles.kicker}>Ranked blind matches</Text>
-              <Text style={styles.sectionTitle}>Choose by fit before photos</Text>
+              <Text style={styles.sectionTitle}>
+                {usingRemoteCandidates ? 'Real members near your lens' : 'Choose by fit before photos'}
+              </Text>
             </View>
             <Ionicons name="git-branch-outline" size={23} color="#0c5a41" />
           </View>
@@ -1495,7 +1662,11 @@ export default function App() {
             </View>
           </View>
         </View>
+          </>
+        ) : null}
 
+        {activeTab === 'Dates' ? (
+          <>
         <View style={[styles.card, { width: cardWidth }]}>
           <View style={styles.sectionHeader}>
             <View>
@@ -1844,19 +2015,99 @@ export default function App() {
           </Pressable>
         </View>
           </>
-        )}
+        ) : null}
+
+        {activeTab === 'Me' ? (
+          <>
+        <View style={[styles.card, { width: cardWidth }]}>
+          <View style={styles.sectionHeader}>
+            <View>
+              <Text style={styles.kicker}>Your account</Text>
+              <Text style={styles.sectionTitle} numberOfLines={1}>
+                {authEmail ?? 'Signed in'}
+              </Text>
+            </View>
+            <Ionicons name="person-circle-outline" size={24} color="#0c5a41" />
+          </View>
+          <View style={styles.lensGrid}>
+            <View style={styles.lensRow}>
+              <Text style={styles.lensLabel}>Member</Text>
+              <Text style={styles.lensValue} numberOfLines={1}>
+                {authMemberId ?? '—'}
+              </Text>
+            </View>
+            <View style={styles.lensRow}>
+              <Text style={styles.lensLabel}>Matches</Text>
+              <Text style={styles.lensValue}>
+                {usingRemoteCandidates ? `${rankedMatches.length} real members` : 'Sample matches'}
+              </Text>
+            </View>
+            <View style={styles.lensRow}>
+              <Text style={styles.lensLabel}>Sync</Text>
+              <Text style={styles.lensValue}>{syncDetail}</Text>
+            </View>
+          </View>
+          <Pressable accessibilityRole="button" onPress={signOut} style={styles.saveButton}>
+            <Ionicons name="log-out-outline" size={17} color="#ffffff" />
+            <Text style={styles.saveButtonText}>Sign out</Text>
+          </Pressable>
+        </View>
+
+        <View style={[styles.card, { width: cardWidth }]}>
+          <View style={styles.sectionHeader}>
+            <View>
+              <Text style={styles.kicker}>Your match lens</Text>
+              <Text style={styles.sectionTitle}>{onboardingProfile.intention}</Text>
+            </View>
+            <Ionicons name="options-outline" size={23} color="#0c5a41" />
+          </View>
+          <View style={styles.lensGrid}>
+            <View style={styles.lensRow}>
+              <Text style={styles.lensLabel}>City</Text>
+              <Text style={styles.lensValue}>{onboardingProfile.city}</Text>
+            </View>
+            <View style={styles.lensRow}>
+              <Text style={styles.lensLabel}>Language</Text>
+              <Text style={styles.lensValue}>{onboardingProfile.languages.join(' + ')}</Text>
+            </View>
+            <View style={styles.lensRow}>
+              <Text style={styles.lensLabel}>Faith</Text>
+              <Text style={styles.lensValue}>{onboardingProfile.faithComfort}</Text>
+            </View>
+            <View style={styles.lensRow}>
+              <Text style={styles.lensLabel}>Reveal pace</Text>
+              <Text style={styles.lensValue}>{onboardingProfile.revealPace}</Text>
+            </View>
+          </View>
+          <View style={styles.dealbreakerList}>
+            {onboardingProfile.dealbreakers.map((dealbreaker) => (
+              <View key={dealbreaker} style={styles.dealbreakerPill}>
+                <Text style={styles.dealbreakerText}>{dealbreaker}</Text>
+              </View>
+            ))}
+          </View>
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setShowOnboarding(true)}
+            style={styles.reportButton}
+          >
+            <Ionicons name="create-outline" size={18} color="#1f241f" />
+            <Text style={styles.reportButtonText}>Edit onboarding</Text>
+          </Pressable>
+        </View>
+          </>
+        ) : null}
       </ScrollView>
 
       <View style={styles.tabBar}>
         {tabs.map((tab) => {
-          const active = tab.label === activeTab || (activeTab === 'Match' && tab.label === 'Match');
-          const selectableTab = tab.label === 'Talks' ? 'Talks' : 'Match';
+          const active = tab.label === activeTab;
 
           return (
             <Pressable
               key={tab.label}
               accessibilityRole="button"
-              onPress={() => setActiveTab(selectableTab)}
+              onPress={() => setActiveTab(tab.label)}
               style={styles.tabItem}
             >
               <Ionicons
@@ -1870,6 +2121,14 @@ export default function App() {
         })}
       </View>
     </SafeAreaView>
+  );
+}
+
+export default function App() {
+  return (
+    <SafeAreaProvider>
+      <AppContent />
+    </SafeAreaProvider>
   );
 }
 

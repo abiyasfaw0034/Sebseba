@@ -17,11 +17,13 @@
 
 ## Next product steps
 
-1. Add authentication and private member accounts.
+1. ~~Add authentication and private member accounts.~~ Done — email/password accounts
+   with hashed passwords and signed session tokens; member-state is now private per account.
 2. Replace local sample matches with database-backed ranked candidates.
 3. Upgrade prototype chat to real-time delivery with member-to-member replies.
 4. Add real voice recording, playback, and consent controls.
-5. Add image upload, verification, and mutual photo reveal.
+5. Add image upload and verification. (Mutual photo-reveal consent gating is done;
+   real image upload/verification still pending.)
 6. Add hosted venue/event inventory and booking.
 7. Connect the dashboard to reports, matches, events, and moderation queues.
 8. Add push notifications for prompts, reveals, and date plans.

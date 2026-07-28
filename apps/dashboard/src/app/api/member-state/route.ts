@@ -1,6 +1,8 @@
 import { mkdir, readFile, writeFile } from "fs/promises";
 import path from "path";
 import { NextRequest, NextResponse } from "next/server";
+import { corsPreflight, withCors } from "@/lib/http";
+import { getAuthenticatedMemberId } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -136,12 +138,7 @@ const asBoolean = (value: unknown, fallback: boolean) =>
 const asChatAuthor = (value: unknown): ChatMessageAuthor =>
   value === "match" || value === "host" || value === "member" ? value : "member";
 
-const normalizeMemberId = (value: unknown) => {
-  const candidate = asString(value, "demo-member", 64);
-  return /^[a-zA-Z0-9_.:-]+$/.test(candidate) ? candidate : "demo-member";
-};
-
-const normalizeProfile = (value: unknown, fallback: OnboardingProfile = defaultProfile): OnboardingProfile => {
+const normalizeProfile =(value: unknown, fallback: OnboardingProfile = defaultProfile): OnboardingProfile => {
   const input = isRecord(value) ? value : {};
 
   return {
@@ -292,18 +289,15 @@ const writeStore = async (store: MemberStateStore) => {
   await writeFile(dataFile, `${JSON.stringify(store, null, 2)}\n`, "utf8");
 };
 
-const withCors = (response: NextResponse) => {
-  response.headers.set("Access-Control-Allow-Origin", "*");
-  response.headers.set("Access-Control-Allow-Methods", "GET, PUT, OPTIONS");
-  response.headers.set("Access-Control-Allow-Headers", "Content-Type");
-  response.headers.set("Cache-Control", "no-store");
-  return response;
-};
-
-export const OPTIONS = () => withCors(new NextResponse(null, { status: 204 }));
+export const OPTIONS = () => corsPreflight("GET, PUT, OPTIONS");
 
 export const GET = async (request: NextRequest) => {
-  const memberId = normalizeMemberId(request.nextUrl.searchParams.get("memberId"));
+  const memberId = getAuthenticatedMemberId(request);
+
+  if (!memberId) {
+    return withCors(NextResponse.json({ error: "Authentication required." }, { status: 401 }));
+  }
+
   const store = await readStore();
   const current = store.members[memberId];
 
@@ -311,13 +305,18 @@ export const GET = async (request: NextRequest) => {
 };
 
 export const PUT = async (request: NextRequest) => {
+  const memberId = getAuthenticatedMemberId(request);
+
+  if (!memberId) {
+    return withCors(NextResponse.json({ error: "Authentication required." }, { status: 401 }));
+  }
+
   const body = await request.json().catch(() => null);
 
   if (!isRecord(body)) {
     return withCors(NextResponse.json({ error: "Expected a JSON object body." }, { status: 400 }));
   }
 
-  const memberId = normalizeMemberId(body.memberId ?? request.nextUrl.searchParams.get("memberId"));
   const store = await readStore();
   const now = new Date().toISOString();
   const previous = store.members[memberId] ? normalizeState(memberId, store.members[memberId]) : createDefaultState(memberId, now);

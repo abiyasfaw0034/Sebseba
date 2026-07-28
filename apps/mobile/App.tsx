@@ -1,8 +1,11 @@
 import { Ionicons, MaterialCommunityIcons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
+import * as SecureStore from 'expo-secure-store';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   ImageBackground,
+  Platform,
   Pressable,
   SafeAreaView,
   ScrollView,
@@ -335,9 +338,66 @@ const formatChatTime = (value: string) => {
   return date.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 };
 
-const memberStateApiBaseUrl = process.env.EXPO_PUBLIC_ABIYASFAW_API_URL?.replace(/\/$/, '') ?? 'http://localhost:3000';
-const memberStateMemberId = process.env.EXPO_PUBLIC_ABIYASFAW_MEMBER_ID?.trim() || 'demo-member';
-const memberStateEndpoint = `${memberStateApiBaseUrl}/api/member-state?memberId=${encodeURIComponent(memberStateMemberId)}`;
+const apiBaseUrl = process.env.EXPO_PUBLIC_ABIYASFAW_API_URL?.replace(/\/$/, '') ?? 'http://localhost:3000';
+const memberStateEndpoint = `${apiBaseUrl}/api/member-state`;
+const authRegisterEndpoint = `${apiBaseUrl}/api/auth/register`;
+const authLoginEndpoint = `${apiBaseUrl}/api/auth/login`;
+const authSessionEndpoint = `${apiBaseUrl}/api/auth/session`;
+
+const sessionTokenKey = 'abiyasfaw_session_token';
+// SecureStore is unavailable on web; fall back to localStorage there, with an in-memory mirror everywhere.
+let memoryToken: string | null = null;
+
+const persistSessionToken = async (token: string) => {
+  memoryToken = token;
+  try {
+    if (Platform.OS === 'web') {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.setItem(sessionTokenKey, token);
+      }
+    } else {
+      await SecureStore.setItemAsync(sessionTokenKey, token);
+    }
+  } catch {
+    // Keep the in-memory token even if secure storage is unavailable.
+  }
+};
+
+const loadSessionToken = async (): Promise<string | null> => {
+  if (memoryToken) {
+    return memoryToken;
+  }
+
+  try {
+    if (Platform.OS === 'web') {
+      memoryToken = typeof localStorage !== 'undefined' ? localStorage.getItem(sessionTokenKey) : null;
+    } else {
+      memoryToken = await SecureStore.getItemAsync(sessionTokenKey);
+    }
+  } catch {
+    memoryToken = null;
+  }
+
+  return memoryToken;
+};
+
+const clearSessionToken = async () => {
+  memoryToken = null;
+  try {
+    if (Platform.OS === 'web') {
+      if (typeof localStorage !== 'undefined') {
+        localStorage.removeItem(sessionTokenKey);
+      }
+    } else {
+      await SecureStore.deleteItemAsync(sessionTokenKey);
+    }
+  } catch {
+    // Ignore secure storage errors on sign-out.
+  }
+};
+
+type AuthStatus = 'checking' | 'authenticated' | 'unauthenticated';
+type AuthMode = 'login' | 'register';
 
 const syncCopy: Record<SyncStatus, string> = {
   loading: 'Loading profile',
@@ -452,6 +512,15 @@ export default function App() {
   const [draft, setDraft] = useState('');
   const [chatDraft, setChatDraft] = useState('');
   const [activeTab, setActiveTab] = useState<AppTab>('Match');
+  const [authStatus, setAuthStatus] = useState<AuthStatus>('checking');
+  const [authToken, setAuthToken] = useState<string | null>(null);
+  const [authMemberId, setAuthMemberId] = useState<string | null>(null);
+  const [authEmail, setAuthEmail] = useState<string | null>(null);
+  const [authMode, setAuthMode] = useState<AuthMode>('login');
+  const [authEmailInput, setAuthEmailInput] = useState('');
+  const [authPasswordInput, setAuthPasswordInput] = useState('');
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [authSubmitting, setAuthSubmitting] = useState(false);
   const saveRequestRef = useRef(0);
   const { width } = useWindowDimensions();
 
@@ -515,14 +584,84 @@ export default function App() {
     },
   ];
 
+  const signOut = async () => {
+    await clearSessionToken();
+    setAuthToken(null);
+    setAuthMemberId(null);
+    setAuthEmail(null);
+    setAuthPasswordInput('');
+    setAuthError(null);
+    setMemberStateLoaded(false);
+    setAuthStatus('unauthenticated');
+  };
+
   useEffect(() => {
     let cancelled = false;
 
+    const restoreSession = async () => {
+      const token = await loadSessionToken();
+
+      if (!token) {
+        if (!cancelled) {
+          setAuthStatus('unauthenticated');
+        }
+        return;
+      }
+
+      try {
+        const response = await fetch(authSessionEndpoint, {
+          headers: { Authorization: `Bearer ${token}` },
+        });
+
+        if (!response.ok) {
+          throw new Error(`Session check failed: ${response.status}`);
+        }
+
+        const session = (await response.json()) as { memberId?: string; email?: string };
+
+        if (cancelled) {
+          return;
+        }
+
+        setAuthToken(token);
+        setAuthMemberId(session.memberId ?? null);
+        setAuthEmail(session.email ?? null);
+        setAuthStatus('authenticated');
+      } catch {
+        await clearSessionToken();
+
+        if (!cancelled) {
+          setAuthStatus('unauthenticated');
+        }
+      }
+    };
+
+    restoreSession();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!authToken) {
+      return undefined;
+    }
+
+    let cancelled = false;
+
     const loadMemberState = async () => {
+      setMemberStateLoaded(false);
       setSyncStatus('loading');
 
       try {
-        const response = await fetch(memberStateEndpoint);
+        const response = await fetch(memberStateEndpoint, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+
+        if (response.status === 401) {
+          throw new Error('unauthorized');
+        }
 
         if (!response.ok) {
           throw new Error(`Member state load failed: ${response.status}`);
@@ -559,10 +698,17 @@ export default function App() {
         setChatMessages(state.chatMessages ?? []);
         setLastSyncedAt(state.updatedAt ?? new Date().toISOString());
         setSyncStatus('saved');
-      } catch {
-        if (!cancelled) {
-          setSyncStatus('offline');
+      } catch (error) {
+        if (cancelled) {
+          return;
         }
+
+        if (error instanceof Error && error.message === 'unauthorized') {
+          await signOut();
+          return;
+        }
+
+        setSyncStatus('offline');
       } finally {
         if (!cancelled) {
           setMemberStateLoaded(true);
@@ -575,14 +721,14 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authToken]);
 
   useEffect(() => {
     setDraft(promptAnswers[selectedPrompt] ?? '');
   }, [promptAnswers, selectedPrompt]);
 
   useEffect(() => {
-    if (!memberStateLoaded) {
+    if (!memberStateLoaded || !authToken) {
       return undefined;
     }
 
@@ -592,7 +738,7 @@ export default function App() {
       setSyncStatus('saving');
 
       const payload: PersistedMemberState = {
-        memberId: memberStateMemberId,
+        memberId: authMemberId ?? undefined,
         onboardingComplete,
         profile: onboardingProfile,
         selectedMatchId,
@@ -616,9 +762,15 @@ export default function App() {
           method: 'PUT',
           headers: {
             'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`,
           },
           body: JSON.stringify(payload),
         });
+
+        if (response.status === 401) {
+          await signOut();
+          return;
+        }
 
         if (!response.ok) {
           throw new Error(`Member state save failed: ${response.status}`);
@@ -639,6 +791,8 @@ export default function App() {
 
     return () => clearTimeout(timeout);
   }, [
+    authMemberId,
+    authToken,
     acceptedDatePlan,
     activeVoicePromptId,
     chatMessages,
@@ -770,7 +924,7 @@ export default function App() {
     const moderationTags = getChatModerationTags(text);
     const flagged = moderationTags.length > 0;
     const nextMessage: ChatMessage = {
-      id: `${memberStateMemberId}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      id: `${authMemberId ?? 'member'}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
       matchId: selectedMatch.id,
       author: 'member',
       text,
@@ -783,6 +937,170 @@ export default function App() {
     setChatMessages((current) => [...current, nextMessage].slice(-120));
     setChatDraft('');
   };
+
+  const toggleAuthMode = () => {
+    setAuthMode((current) => (current === 'login' ? 'register' : 'login'));
+    setAuthError(null);
+  };
+
+  const submitAuth = async () => {
+    if (authSubmitting) {
+      return;
+    }
+
+    const email = authEmailInput.trim().toLowerCase();
+    const password = authPasswordInput;
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setAuthError('Enter a valid email address.');
+      return;
+    }
+
+    if (password.length < 8) {
+      setAuthError('Password must be at least 8 characters.');
+      return;
+    }
+
+    setAuthSubmitting(true);
+    setAuthError(null);
+
+    try {
+      const response = await fetch(authMode === 'login' ? authLoginEndpoint : authRegisterEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email, password }),
+      });
+
+      const data = (await response.json().catch(() => null)) as
+        | { token?: string; memberId?: string; email?: string; error?: string }
+        | null;
+
+      if (!response.ok || !data?.token || !data?.memberId) {
+        setAuthError(data?.error ?? 'Could not sign you in. Please try again.');
+        return;
+      }
+
+      await persistSessionToken(data.token);
+      setAuthToken(data.token);
+      setAuthMemberId(data.memberId);
+      setAuthEmail(data.email ?? email);
+      setAuthPasswordInput('');
+      setAuthStatus('authenticated');
+    } catch {
+      setAuthError('Could not reach the server. Check your connection and try again.');
+    } finally {
+      setAuthSubmitting(false);
+    }
+  };
+
+  if (authStatus === 'checking') {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="dark" />
+        <View style={styles.splash}>
+          <ActivityIndicator color="#0c5a41" size="large" />
+          <Text style={styles.splashText}>Loading Abiyasfaw</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (authStatus !== 'authenticated') {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="dark" />
+        <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
+          <View style={styles.header}>
+            <View>
+              <Text style={styles.brand}>Abiyasfaw</Text>
+              <Text style={styles.subtle}>
+                {authMode === 'login' ? 'Sign in to your private account' : 'Create your private account'}
+              </Text>
+            </View>
+          </View>
+
+          <View style={[styles.card, { width: cardWidth }]}>
+            <View style={styles.sectionHeader}>
+              <View>
+                <Text style={styles.kicker}>{authMode === 'login' ? 'Welcome back' : 'Get started'}</Text>
+                <Text style={styles.sectionTitle}>
+                  {authMode === 'login' ? 'Sign in to keep matching' : 'Your matches stay private'}
+                </Text>
+              </View>
+              <Ionicons name="lock-closed-outline" size={23} color="#0c5a41" />
+            </View>
+
+            <View style={styles.authField}>
+              <Text style={styles.answerLabel}>Email</Text>
+              <TextInput
+                autoCapitalize="none"
+                autoComplete="email"
+                autoCorrect={false}
+                keyboardType="email-address"
+                onChangeText={setAuthEmailInput}
+                placeholder="you@example.com"
+                placeholderTextColor="#7a8377"
+                style={styles.authInput}
+                textContentType="emailAddress"
+                value={authEmailInput}
+              />
+            </View>
+
+            <View style={styles.authField}>
+              <Text style={styles.answerLabel}>Password</Text>
+              <TextInput
+                autoCapitalize="none"
+                autoComplete={authMode === 'login' ? 'current-password' : 'new-password'}
+                autoCorrect={false}
+                onChangeText={setAuthPasswordInput}
+                onSubmitEditing={submitAuth}
+                placeholder="At least 8 characters"
+                placeholderTextColor="#7a8377"
+                secureTextEntry
+                style={styles.authInput}
+                textContentType="password"
+                value={authPasswordInput}
+              />
+            </View>
+
+            {authError ? (
+              <View style={styles.warningBox}>
+                <Ionicons name="alert-circle-outline" size={18} color="#c62b23" />
+                <Text style={styles.warningText}>{authError}</Text>
+              </View>
+            ) : null}
+
+            <Pressable
+              accessibilityRole="button"
+              disabled={authSubmitting}
+              onPress={submitAuth}
+              style={[styles.saveButton, authSubmitting ? styles.buttonDisabled : null]}
+            >
+              <Ionicons name={authMode === 'login' ? 'log-in-outline' : 'person-add-outline'} size={17} color="#ffffff" />
+              <Text style={styles.saveButtonText}>
+                {authSubmitting ? 'Please wait' : authMode === 'login' ? 'Sign in' : 'Create account'}
+              </Text>
+            </Pressable>
+
+            <Pressable accessibilityRole="button" onPress={toggleAuthMode} style={styles.authToggle}>
+              <Text style={styles.authToggleText}>
+                {authMode === 'login' ? 'New here? Create an account' : 'Have an account? Sign in'}
+              </Text>
+            </Pressable>
+          </View>
+
+          <View style={[styles.safetyRow, { width: cardWidth }]}>
+            <View style={styles.safetyIcon}>
+              <Ionicons name="shield-checkmark-outline" size={18} color="#0c5a41" />
+            </View>
+            <Text style={styles.safetyText}>
+              Your onboarding lens, prompts, and reveal progress are tied to this account and stay private to you.
+            </Text>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    );
+  }
 
   if (showOnboarding || !onboardingComplete) {
     const currentValue = onboardingProfile[activeOnboardingStep.key];
@@ -882,18 +1200,25 @@ export default function App() {
       <StatusBar style="dark" />
       <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
         <View style={styles.header}>
-          <View>
+          <View style={styles.headerCopy}>
             <Text style={styles.brand}>Abiyasfaw</Text>
-            <Text style={styles.subtle}>Blind match room</Text>
+            <Text style={styles.subtle} numberOfLines={1}>
+              {authEmail ?? 'Blind match room'}
+            </Text>
             <Text style={[styles.syncText, syncStatus === 'offline' ? styles.syncTextOffline : null]}>{syncDetail}</Text>
           </View>
-          <Pressable
-            accessibilityLabel="Edit onboarding"
-            onPress={() => setShowOnboarding(true)}
-            style={styles.iconButton}
-          >
-            <Ionicons name="create-outline" size={21} color="#1f241f" />
-          </Pressable>
+          <View style={styles.headerActions}>
+            <Pressable
+              accessibilityLabel="Edit onboarding"
+              onPress={() => setShowOnboarding(true)}
+              style={styles.iconButton}
+            >
+              <Ionicons name="create-outline" size={21} color="#1f241f" />
+            </Pressable>
+            <Pressable accessibilityLabel="Sign out" onPress={signOut} style={styles.iconButton}>
+              <Ionicons name="log-out-outline" size={21} color="#c62b23" />
+            </Pressable>
+          </View>
         </View>
 
         {activeTab === 'Talks' ? (
@@ -1567,6 +1892,52 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+    gap: 10,
+  },
+  headerCopy: {
+    flex: 1,
+  },
+  headerActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  splash: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 14,
+  },
+  splashText: {
+    color: '#0c5a41',
+    fontSize: 13,
+    fontWeight: '900',
+    textTransform: 'uppercase',
+  },
+  authField: {
+    gap: 6,
+  },
+  authInput: {
+    minHeight: 50,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 12,
+    color: '#1f241f',
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: 'rgba(31, 36, 31, 0.16)',
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  authToggle: {
+    minHeight: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  authToggleText: {
+    color: '#0c5a41',
+    fontSize: 13,
+    fontWeight: '900',
   },
   brand: {
     color: '#1f241f',

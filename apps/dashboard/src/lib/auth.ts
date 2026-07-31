@@ -90,6 +90,14 @@ export const findAccountByEmail = async (email: string): Promise<Account | null>
   return store.accounts[normalizeEmail(email)] ?? null;
 };
 
+export type AccountSummary = Pick<Account, "id" | "email" | "createdAt">;
+
+/** Non-sensitive account list (no salt/hash) for server-side views like the ops dashboard. */
+export const listAccountSummaries = async (): Promise<AccountSummary[]> => {
+  const store = await readAccountStore();
+  return Object.values(store.accounts).map(({ id, email, createdAt }) => ({ id, email, createdAt }));
+};
+
 export const createAccount = async (email: string, password: string): Promise<Account> => {
   const normalizedEmail = normalizeEmail(email);
   const store = await readAccountStore();

@@ -120,7 +120,7 @@ env var — updated to the account flow.
 - `apps/dashboard/src/app/api/auth/register/route.ts`
 - `apps/dashboard/src/app/api/auth/login/route.ts`
 - `apps/dashboard/src/app/api/auth/session/route.ts`
-- `docs/worklog-2026-07-auth-and-reveal.md` (this file)
+- `docs/worklogs/worklog-2026-07-auth-and-reveal.md` (this file)
 
 Suggested commits (if splitting): (1) finish mutual photo reveal + backend
 persistence/coherence, (2) built-in auth + private accounts.
@@ -216,4 +216,110 @@ not committed). They'll show up as candidates when you run the app locally. Dele
 ### Still open after this
 - Real (not simulated) member-to-member chat delivery — roadmap #3.
 - Move the file store to a real database; add geo/availability to candidate ranking.
+- Auth hardening items listed above.
+
+---
+
+# Roadmap #3 (2026-07-31) — real member-to-member chat + unread inbox
+
+Chat used to live inside each member's *private* member-state, so a message could never
+reach the other person (the two-way feel was a local simulated reply). This replaces that
+with a real shared conversation store and a match inbox.
+
+### Backend
+New shared store — the single source of truth for chat, so a message sent by one member
+is actually delivered to the other:
+- `apps/dashboard/src/lib/conversations.ts` — `.data/conversations.json` keyed by a stable
+  participant-pair id. `sendMessage`, `getThread`, `markThreadRead`, `getInbox`, and
+  `getHeldReviews`. Moderation-flagged messages are stored **held** and *withheld from the
+  recipient* (the sender still sees their own; a host reviews them) — they never increment
+  the peer's unread count.
+- `apps/dashboard/src/lib/moderation.ts` — the chat moderation rules, extracted so the
+  messages route and the member-state history share one authority (mobile keeps a
+  compose-time copy purely as a hint).
+
+New routes (auth required, identity from the bearer token):
+| Route | Method | Purpose |
+|---|---|---|
+| `/api/messages` | `GET ?peerId=` | Thread with a peer, from my perspective (`author: 'me' \| 'them'`, `readAt`) |
+| `/api/messages` | `POST` | Send `{ toMemberId, text }` → moderated, delivered or held |
+| `/api/inbox` | `GET` | Conversation summaries + `unreadTotal` |
+| `/api/inbox` | `POST` | `{ peerId }` → mark that thread read |
+
+`chatMessages` was removed from member-state (type + default + normalize); the mobile app
+no longer stores or sends it. The dashboard safety board (`page.tsx`) now reads held chat
+from the conversation store via `getHeldReviews()` instead of scanning member-state.
+
+### Mobile — `apps/mobile/App.tsx`
+- Removed the simulated match reply (`buildMatchReply` + timers) entirely.
+- Chat now sends to `POST /api/messages` and renders a live thread fetched from
+  `GET /api/messages?peerId=<match id>` (a remote candidate's id **is** the peer's real
+  memberId). The thread polls every ~4s while the Talks tab is open and marks the thread
+  read on open; the inbox polls every ~6s while signed in.
+- Unread badges: a red count on the **Talks** tab (total unread) and on each match row in
+  the ranked list; read receipts ("Delivered" / "Read") on your own messages.
+- Chat is honestly gated: against seed sample matches (no real backend member) the composer
+  is disabled with "Live chat opens once you match with a real member."
+- `401` on any chat call signs the member out, consistent with the rest of the app.
+
+### Verification (all green)
+| Check | Result |
+|---|---|
+| `apps/dashboard` `tsc` + `eslint` + `next build` | clean; `/api/messages` + `/api/inbox` registered |
+| `apps/mobile` `tsc --noEmit` | clean |
+| Expo web export | builds (948 KB) |
+| Live two-account run (Alice ↔ Bob) | send → peer inbox unread `1` → thread shows `them` → mark-read clears to `0` → sender sees `readAt` (read receipt); Bob's reply reaches Alice (two-way); phone-number message **held**, withheld from Bob, unread stays `0`, and the dashboard `/` HTML renders it on the safety board; guards `401` (no token) / `400` (self-send, empty) |
+
+### Still open after this
+- Delivery is polling; swap to websockets or push for true real-time (ties into #4).
+- Move the file store to a real database; add geo/availability to candidate ranking.
+- Auth hardening items listed above.
+
+---
+
+# Real dashboard data (2026-08-01)
+
+Push notifications (roadmap #4) need a physical device + EAS push token, which isn't
+available in this environment, so we took the highest-value device-independent task
+instead: make the ops console reflect **real** store data rather than hardcoded samples.
+(Before this, only the safety board's held-chat rows were real; metrics, the member queue,
+and the reveal workflow were all mock.)
+
+### New — `apps/dashboard/src/lib/dashboard.ts`
+Server-side aggregation (`getDashboardData()`) that reads the three `.data` stores and
+derives everything the console shows:
+- **Metrics** — Members onboarded (of registered), Prompt answers logged (+ avg/member),
+  Reveal requests (+ mutually opened), Safety holds (held chat + reveal-before-prompt), with
+  the Safety card tinted `watch` when non-zero.
+- **Compatibility queue** — one row per onboarded member: name from the account email, short
+  code, city, a cue synthesized from the profile, a readiness score (onboarding + prompts +
+  voice + date + reveal), a derived status (`Onboarding` → `Needs prompt` → `Ready for host`
+  → `Voice reveal ready` → `Date accepted` → `Reveal requested` → `Photos open`), prompt
+  stage (`n/3`, "· reveal paused" when paused), languages, and profile tags. Sorted by
+  readiness then recency, top 6.
+- **Reveal workflow** — members who completed all prompts, members with a saved voice intro,
+  and the most-requested hosted table.
+- **Safety board** — held chat messages plus members who requested a reveal before finishing
+  the prompt exchange.
+Everything falls back to representative sample data when the store is empty, so a fresh
+install still looks alive (`usingRealQueue` / `usingRealSafety` flags gate the copy).
+
+Added `listAccountSummaries()` to `src/lib/auth.ts` (id/email/createdAt only — no salt/hash)
+so the dashboard can map member ids to human names.
+
+### `apps/dashboard/src/app/page.tsx`
+Removed the hardcoded `metrics` / `queue` / `workflow` / `safetyReviews` and the local
+held-chat reader; the page now awaits `getDashboardData()`. The prompt library and hosted-
+date rooms remain curated content (no member data behind them yet). Reveal-workflow icons
+stay in the page and are matched to the data by index.
+
+### Verification (all green)
+| Check | Result |
+|---|---|
+| `apps/dashboard` `tsc` + `eslint` + `next build` | clean |
+| Live two-account seed (Selam + Nahom) → rendered `/` HTML | metrics compute from the store (onboarded/of-registered, prompt answers + avg, reveal requests + mutually opened, safety holds → `watch`); both members appear in the queue with real cities/status; the reveal-before-prompt flag and a held chat both render on the safety board; heading switches to "N blind profiles ready for review" |
+
+### Still open after this
+- Push notifications (#4) — needs a device + EAS push token (parked).
+- Reports + real hosted-event inventory for the dashboard; move the file store to a database.
 - Auth hardening items listed above.

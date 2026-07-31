@@ -11,11 +11,17 @@
 - Hosted first-date acceptance
 - Safety pause and dealbreaker visibility
 - Reveal-safe chat composer with contact/photo-pressure moderation holds
+- Real member-to-member chat delivery with a shared conversation store, match inbox,
+  unread badges (per match + Talks tab), read receipts, and host-held (withheld) messages
 - Four working member tabs: Match (discovery), Talks (chat), Dates (reveal + date prep), Me (account + lens)
 - Real member-to-member candidates (accounts match each other; seed samples used only when no real members exist)
 - Operations dashboard prototype
 - File-backed backend persistence for onboarding, prompt answers, reveal progress, hosted-date choices, and chat messages
 - Dashboard safety board intake for held chat messages
+- Operations console driven by real store data: metrics (onboarded, prompt answers,
+  reveal requests, safety holds), a live compatibility queue of real members, reveal-workflow
+  stats, and a safety board combining held chat + reveal-before-prompt flags (seed samples
+  only when the store is empty)
 
 ## Next product steps
 
@@ -24,12 +30,17 @@
 2. Replace local sample matches with database-backed ranked candidates. (Partly done:
    real accounts now match each other via `GET /api/candidates` off the file store;
    swap the file store for a database and add geo/availability filtering.)
-3. Upgrade prototype chat to real-time delivery with member-to-member replies. (Chat is
-   two-way in the prototype via a simulated match reply; real cross-member delivery pending.)
+3. ~~Upgrade prototype chat to real-time delivery with member-to-member replies.~~ Done —
+   messages are delivered member-to-member through a shared conversation store
+   (`GET/POST /api/messages`, `GET/POST /api/inbox`), with an inbox, unread counts, read
+   receipts, and moderation holds. Delivery is short-interval polling; swap to
+   websockets/push for true real-time.
 4. Add real voice recording, playback, and consent controls.
 5. Add image upload and verification. (Mutual photo-reveal consent gating is done;
    real image upload/verification still pending.)
 6. Add hosted venue/event inventory and booking.
-7. Connect the dashboard to reports, matches, events, and moderation queues.
+7. Connect the dashboard to reports, matches, events, and moderation queues. (Partly done:
+   the console now reads real members, metrics, reveal workflow, and moderation/safety
+   holds from the store via `src/lib/dashboard.ts`; reports and event inventory still pending.)
 8. Add push notifications for prompts, reveals, and date plans.
 9. Prepare deployment for dashboard, API, and mobile builds.

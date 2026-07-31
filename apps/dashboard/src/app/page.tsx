@@ -18,93 +18,20 @@ import {
   UsersRound,
 } from "lucide-react";
 import Image from "next/image";
-import { getHeldReviews } from "@/lib/conversations";
+import { getDashboardData } from "@/lib/dashboard";
 import styles from "./page.module.css";
 
 export const dynamic = "force-dynamic";
 
-type SafetyReview = {
-  id: string;
-  signal: string;
-  owner: string;
-  state: string;
-};
+// The reveal-workflow cards keep their icons here (data comes from the store).
+const workflowIcons = [CheckCircle2, Mic2, MapPin];
 
-const metrics = [
-  { label: "Reveal-ready matches", value: "184", trend: "+18%", tone: "good" },
-  { label: "Prompt completion", value: "72%", trend: "+9%", tone: "good" },
-  { label: "Safety reviews", value: "23", trend: "-12%", tone: "watch" },
-  { label: "Hosted dates booked", value: "312", trend: "+22%", tone: "good" },
-];
-
-const queue = [
-  {
-    code: "AB-024",
-    name: "Selam",
-    city: "Addis Ababa",
-    cue: "Loves jazz nights, buna talks, and slow Sunday walks",
-    score: "94",
-    status: "Ready for host",
-    stage: "3 prompts matched",
-    language: "Amharic + English",
-    tags: ["Coffee ceremony", "Live music", "Family values"],
-  },
-  {
-    code: "AB-031",
-    name: "Nahom",
-    city: "Hawassa",
-    cue: "Food explorer looking for someone who can debate best shiro",
-    score: "91",
-    status: "Needs prompt",
-    stage: "2 prompts matched",
-    language: "Amharic",
-    tags: ["Mesob dining", "Travel", "Faith"],
-  },
-  {
-    code: "AB-047",
-    name: "Mimi",
-    city: "Dire Dawa",
-    cue: "Keeps first dates playful with language games and old stories",
-    score: "88",
-    status: "Venue pending",
-    stage: "Voice reveal ready",
-    language: "Afan Oromo + English",
-    tags: ["Storytelling", "Dance", "Language prompts"],
-  },
-];
-
-const workflow = [
-  {
-    label: "Prompt lock",
-    value: "3/3",
-    detail: "Both members answered the blind-first exchange.",
-    icon: CheckCircle2,
-  },
-  {
-    label: "Voice window",
-    value: "12 min",
-    detail: "Host can open a guided call before any photo reveal.",
-    icon: Mic2,
-  },
-  {
-    label: "Venue route",
-    value: "Bole",
-    detail: "Nearest hosted tables have privacy screens available.",
-    icon: MapPin,
-  },
-];
-
+// The prompt library and hosted-date rooms are curated content, not member data.
 const prompts = [
   { text: "What song would you play at a coffee ceremony?", category: "Music" },
   { text: "Choose a first date: buna, art walk, or tej tasting.", category: "Date plan" },
   { text: "Which family tradition shaped how you love?", category: "Values" },
   { text: "Pick a meal to share from one mesob.", category: "Food" },
-];
-
-const safetyReviews: SafetyReview[] = [
-  { id: "SR-118", signal: "Photo reveal request before prompts", owner: "Hana", state: "Review" },
-  { id: "SR-121", signal: "Repeated late cancellation", owner: "Dawit", state: "Watch" },
-  { id: "SR-126", signal: "Venue feedback needs follow-up", owner: "Meklit", state: "Open" },
 ];
 
 const events = [
@@ -113,33 +40,10 @@ const events = [
   { title: "Addis Art Walk", time: "Sat, 4:00 PM", seats: "24 seats", fill: "81%" },
 ];
 
-// Held chat messages now live in the shared conversation store (they used to be
-// scattered across each member's private state). Surface them on the safety board.
-const shortMemberId = (id: string) => (id.length > 12 ? `${id.slice(0, 12)}…` : id);
-
-const readFlaggedChatReviews = async (): Promise<SafetyReview[]> => {
-  const held = await getHeldReviews();
-
-  return held.slice(0, 4).map((review) => ({
-    id: review.id.slice(0, 8),
-    signal: `${shortMemberId(review.senderId)} → ${shortMemberId(review.recipientId)}: ${review.text.slice(0, 90)} (${review.flagReason})`,
-    owner: shortMemberId(review.senderId),
-    state: "Held",
-  }));
-};
-
 export default async function Home() {
-  const flaggedChatReviews = await readFlaggedChatReviews();
-  const dashboardMetrics = metrics.map((metric) =>
-    metric.label === "Safety reviews"
-      ? {
-          ...metric,
-          value: String(Number(metric.value) + flaggedChatReviews.length),
-          trend: flaggedChatReviews.length ? `${flaggedChatReviews.length} chat holds` : metric.trend,
-        }
-      : metric,
-  );
-  const visibleSafetyReviews = [...flaggedChatReviews, ...safetyReviews].slice(0, 5);
+  const dashboard = await getDashboardData();
+  const dashboardMetrics = dashboard.metrics;
+  const visibleSafetyReviews = dashboard.safetyReviews;
 
   return (
     <div className={styles.shell}>
@@ -204,7 +108,7 @@ export default async function Home() {
             <article className={styles.metric} data-tone={metric.tone} key={metric.label}>
               <span>{metric.label}</span>
               <strong>{metric.value}</strong>
-              <p>{metric.trend} vs last week</p>
+              <p>{metric.detail}</p>
             </article>
           ))}
         </section>
@@ -214,7 +118,11 @@ export default async function Home() {
             <div className={styles.sectionHeader}>
               <div>
                 <span className={styles.kicker}>Compatibility queue</span>
-                <h2>Blind profiles ready for review</h2>
+                <h2>
+                  {dashboard.usingRealQueue
+                    ? `${dashboard.onboardedMembers} blind profile${dashboard.onboardedMembers === 1 ? "" : "s"} ready for review`
+                    : "Blind profiles ready for review"}
+                </h2>
               </div>
               <button className={styles.secondaryButton}>
                 <Filter size={17} aria-hidden />
@@ -223,7 +131,7 @@ export default async function Home() {
             </div>
 
             <div className={styles.queueList}>
-              {queue.map((person) => (
+              {dashboard.queue.map((person) => (
                 <article className={styles.profileRow} key={person.code}>
                   <div className={styles.avatar} aria-hidden>
                     {person.name.slice(0, 1)}
@@ -266,8 +174,8 @@ export default async function Home() {
                 <SlidersHorizontal size={19} aria-hidden />
               </div>
               <div className={styles.workflowGrid}>
-                {workflow.map((step) => {
-                  const Icon = step.icon;
+                {dashboard.workflow.map((step, index) => {
+                  const Icon = workflowIcons[index] ?? CheckCircle2;
                   return (
                     <article className={styles.workflowCard} key={step.label}>
                       <Icon size={20} aria-hidden />

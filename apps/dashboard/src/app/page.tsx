@@ -1,5 +1,3 @@
-import { readFile } from "fs/promises";
-import path from "path";
 import {
   AlertTriangle,
   Bell,
@@ -20,6 +18,7 @@ import {
   UsersRound,
 } from "lucide-react";
 import Image from "next/image";
+import { getHeldReviews } from "@/lib/conversations";
 import styles from "./page.module.css";
 
 export const dynamic = "force-dynamic";
@@ -29,10 +28,6 @@ type SafetyReview = {
   signal: string;
   owner: string;
   state: string;
-};
-
-type FlaggedChatReview = SafetyReview & {
-  createdAtTime: number;
 };
 
 const metrics = [
@@ -118,68 +113,19 @@ const events = [
   { title: "Addis Art Walk", time: "Sat, 4:00 PM", seats: "24 seats", fill: "81%" },
 ];
 
-const dataFile = path.join(process.cwd(), ".data", "member-state.json");
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const asString = (value: unknown, fallback: string, maxLength = 240) => {
-  if (typeof value !== "string") {
-    return fallback;
-  }
-
-  const trimmed = value.trim();
-  return trimmed ? trimmed.slice(0, maxLength) : fallback;
-};
+// Held chat messages now live in the shared conversation store (they used to be
+// scattered across each member's private state). Surface them on the safety board.
+const shortMemberId = (id: string) => (id.length > 12 ? `${id.slice(0, 12)}…` : id);
 
 const readFlaggedChatReviews = async (): Promise<SafetyReview[]> => {
-  try {
-    const raw = await readFile(dataFile, "utf8");
-    const parsed = JSON.parse(raw) as unknown;
+  const held = await getHeldReviews();
 
-    if (!isRecord(parsed) || !isRecord(parsed.members)) {
-      return [];
-    }
-
-    const reviews = Object.entries(parsed.members).flatMap<FlaggedChatReview>(([memberId, member]) => {
-      if (!isRecord(member) || !Array.isArray(member.chatMessages)) {
-        return [];
-      }
-
-      return member.chatMessages.flatMap<FlaggedChatReview>((message) => {
-        if (!isRecord(message) || (message.flagged !== true && message.status !== "held")) {
-          return [];
-        }
-
-        const text = asString(message.text, "Message held for review", 90);
-        const matchId = asString(message.matchId, "blind match", 40);
-        const reason = asString(message.flagReason, "host review", 80);
-        const createdAt = asString(message.createdAt, "", 80);
-        const createdAtTime = Number.isNaN(new Date(createdAt).getTime()) ? 0 : new Date(createdAt).getTime();
-
-        return [
-          {
-            id: asString(message.id, `CHAT-${memberId}`, 40),
-            signal: `${matchId}: ${text} (${reason})`,
-            owner: memberId,
-            state: "Held",
-            createdAtTime,
-          },
-        ];
-      });
-    });
-
-    return reviews
-      .sort((first, second) => second.createdAtTime - first.createdAtTime)
-      .slice(0, 4)
-      .map(({ id, signal, owner, state }) => ({ id, signal, owner, state }));
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      console.warn("Could not read held chat reviews", error);
-    }
-
-    return [];
-  }
+  return held.slice(0, 4).map((review) => ({
+    id: review.id.slice(0, 8),
+    signal: `${shortMemberId(review.senderId)} → ${shortMemberId(review.recipientId)}: ${review.text.slice(0, 90)} (${review.flagReason})`,
+    owner: shortMemberId(review.senderId),
+    state: "Held",
+  }));
 };
 
 export default async function Home() {

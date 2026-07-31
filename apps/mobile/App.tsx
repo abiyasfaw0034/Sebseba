@@ -62,18 +62,29 @@ type RankedMatch = CandidateMatch & {
   riskConflicts: string[];
 };
 
-type ChatMessageAuthor = 'member' | 'match' | 'host';
 type ChatMessageStatus = 'sent' | 'held';
 
-type ChatMessage = {
+// One member-to-member message, from the current viewer's perspective (the backend
+// tags each message 'me' or 'them' and hides the peer's still-held messages).
+type ThreadMessage = {
   id: string;
-  matchId: string;
-  author: ChatMessageAuthor;
+  author: 'me' | 'them';
   text: string;
   createdAt: string;
-  flagged: boolean;
   status: ChatMessageStatus;
+  flagged: boolean;
   flagReason?: string;
+  readAt: string | null;
+};
+
+// One conversation summary for the match inbox / unread badges.
+type InboxSummary = {
+  peerId: string;
+  lastMessageText: string;
+  lastMessageAt: string;
+  lastMessageAuthor: 'me' | 'them';
+  lastMessageStatus: ChatMessageStatus;
+  unreadCount: number;
 };
 
 type PersistedMemberState = {
@@ -93,7 +104,6 @@ type PersistedMemberState = {
   matchRevealConsentGranted?: boolean;
   photoRevealOpened?: boolean;
   revealPausedUntil?: string | null;
-  chatMessages?: ChatMessage[];
   updatedAt?: string;
 };
 
@@ -341,6 +351,8 @@ const formatChatTime = (value: string) => {
 const apiBaseUrl = process.env.EXPO_PUBLIC_ABIYASFAW_API_URL?.replace(/\/$/, '') ?? 'http://localhost:3000';
 const memberStateEndpoint = `${apiBaseUrl}/api/member-state`;
 const candidatesEndpoint = `${apiBaseUrl}/api/candidates`;
+const messagesEndpoint = `${apiBaseUrl}/api/messages`;
+const inboxEndpoint = `${apiBaseUrl}/api/inbox`;
 const authRegisterEndpoint = `${apiBaseUrl}/api/auth/register`;
 const authLoginEndpoint = `${apiBaseUrl}/api/auth/login`;
 const authSessionEndpoint = `${apiBaseUrl}/api/auth/session`;
@@ -547,32 +559,6 @@ const rankCandidate = (user: OnboardingProfile, candidate: CandidateMatch): Rank
   };
 };
 
-const matchReplyOpeners = [
-  'That is a warm way to put it.',
-  'I love that you asked that.',
-  'That question makes me smile.',
-  'You read the room well.',
-  'That is exactly my kind of question.',
-];
-
-const matchReplyClosers = [
-  'what first pulled you toward it?',
-  'what would you want to hear back?',
-  'how did that become important to you?',
-  'what does a good version of that look like for you?',
-  'what would make you feel at ease sharing more?',
-];
-
-// Prototype stand-in for the other member: a reveal-safe, on-topic reply so a
-// conversation can actually happen before real member-to-member delivery exists.
-const buildMatchReply = (match: CandidateMatch, memberText: string): string => {
-  const seed = memberText.trim().length;
-  const cue = match.cues.length ? match.cues[seed % match.cues.length] : 'this';
-  const opener = matchReplyOpeners[seed % matchReplyOpeners.length];
-  const closer = matchReplyClosers[seed % matchReplyClosers.length];
-  return `${opener} ${cue} is close to my heart too — ${closer}`;
-};
-
 function AppContent() {
   const [showOnboarding, setShowOnboarding] = useState(true);
   const [onboardingComplete, setOnboardingComplete] = useState(false);
@@ -591,7 +577,11 @@ function AppContent() {
   const [matchRevealConsentGranted, setMatchRevealConsentGranted] = useState(false);
   const [photoRevealOpened, setPhotoRevealOpened] = useState(false);
   const [revealPausedUntil, setRevealPausedUntil] = useState<string | null>(null);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [threadMessages, setThreadMessages] = useState<ThreadMessage[]>([]);
+  const [threadLoading, setThreadLoading] = useState(false);
+  const [inboxSummaries, setInboxSummaries] = useState<InboxSummary[]>([]);
+  const [chatError, setChatError] = useState<string | null>(null);
+  const [chatSending, setChatSending] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('loading');
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [memberStateLoaded, setMemberStateLoaded] = useState(false);
@@ -609,7 +599,6 @@ function AppContent() {
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
   const saveRequestRef = useRef(0);
-  const replyTimeoutsRef = useRef<ReturnType<typeof setTimeout>[]>([]);
   const { width } = useWindowDimensions();
 
   const cardWidth = useMemo(() => Math.min(width - 32, 430), [width]);
@@ -654,11 +643,22 @@ function AppContent() {
   ];
   const canRequestPhotoReveal = revealRequirements.every((requirement) => requirement.complete) && !revealPauseActive;
   const revealGateReady = canRequestPhotoReveal && photoRevealRequested && matchRevealConsentGranted;
-  const selectedChatMessages = useMemo(
-    () => chatMessages.filter((message) => message.matchId === selectedMatch.id),
-    [chatMessages, selectedMatch.id],
+  // Real member-to-member chat only works against a real backend member. Seed sample
+  // matches (shown when no real members exist yet) have no peer to deliver to.
+  const activePeerId = usingRemoteCandidates ? selectedMatch.id : null;
+  const chatAvailable = Boolean(activePeerId);
+  const selectedHeldChatCount = threadMessages.filter((message) => message.status === 'held').length;
+  const unreadByPeer = useMemo(() => {
+    const counts: Record<string, number> = {};
+    inboxSummaries.forEach((summary) => {
+      counts[summary.peerId] = summary.unreadCount;
+    });
+    return counts;
+  }, [inboxSummaries]);
+  const totalUnread = useMemo(
+    () => inboxSummaries.reduce((sum, summary) => sum + summary.unreadCount, 0),
+    [inboxSummaries],
   );
-  const selectedHeldChatCount = selectedChatMessages.filter((message) => message.status === 'held').length;
   const chatDraftModerationTags = getChatModerationTags(chatDraft);
   const chatQuickStarts = [
     {
@@ -786,7 +786,6 @@ function AppContent() {
         setMatchRevealConsentGranted(Boolean(state.matchRevealConsentGranted));
         setPhotoRevealOpened(Boolean(state.photoRevealOpened));
         setRevealPausedUntil(state.revealPausedUntil ?? null);
-        setChatMessages(state.chatMessages ?? []);
         setLastSyncedAt(state.updatedAt ?? new Date().toISOString());
         setSyncStatus('saved');
       } catch (error) {
@@ -859,13 +858,126 @@ function AppContent() {
     setDraft(promptAnswers[selectedPrompt] ?? '');
   }, [promptAnswers, selectedPrompt]);
 
-  useEffect(
-    () => () => {
-      replyTimeoutsRef.current.forEach((handle) => clearTimeout(handle));
-      replyTimeoutsRef.current = [];
-    },
-    [],
-  );
+  // Poll the match inbox for unread counts while signed in.
+  useEffect(() => {
+    if (!authToken) {
+      setInboxSummaries([]);
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const loadInbox = async () => {
+      try {
+        const response = await fetch(inboxEndpoint, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+
+        if (response.status === 401) {
+          await signOut();
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(`Inbox load failed: ${response.status}`);
+        }
+
+        const data = (await response.json()) as { conversations?: InboxSummary[] };
+
+        if (!cancelled) {
+          setInboxSummaries(Array.isArray(data.conversations) ? data.conversations : []);
+        }
+      } catch {
+        // Keep the last known inbox on a transient failure.
+      }
+    };
+
+    loadInbox();
+    const interval = setInterval(loadInbox, 6000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [authToken]);
+
+  // Load and poll the open conversation (Talks tab, real peer), marking it read on open.
+  useEffect(() => {
+    if (!authToken || activeTab !== 'Talks' || !activePeerId) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    const peerId = activePeerId;
+
+    const loadThread = async (showSpinner: boolean) => {
+      if (showSpinner) {
+        setThreadLoading(true);
+      }
+
+      try {
+        const response = await fetch(`${messagesEndpoint}?peerId=${encodeURIComponent(peerId)}`, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+
+        if (response.status === 401) {
+          await signOut();
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(`Thread load failed: ${response.status}`);
+        }
+
+        const data = (await response.json()) as { messages?: ThreadMessage[] };
+
+        if (!cancelled) {
+          setThreadMessages(Array.isArray(data.messages) ? data.messages : []);
+        }
+      } catch {
+        // Keep the last known thread on a transient failure.
+      } finally {
+        if (!cancelled && showSpinner) {
+          setThreadLoading(false);
+        }
+      }
+    };
+
+    const markRead = async () => {
+      try {
+        await fetch(inboxEndpoint, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${authToken}`,
+          },
+          body: JSON.stringify({ peerId }),
+        });
+
+        if (!cancelled) {
+          setInboxSummaries((current) =>
+            current.map((summary) => (summary.peerId === peerId ? { ...summary, unreadCount: 0 } : summary)),
+          );
+        }
+      } catch {
+        // A failed read-receipt is non-critical; the next poll retries.
+      }
+    };
+
+    setThreadMessages([]);
+    loadThread(true);
+    markRead();
+
+    const interval = setInterval(() => {
+      loadThread(false);
+      markRead();
+    }, 4000);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [authToken, activeTab, activePeerId]);
 
   useEffect(() => {
     if (!memberStateLoaded || !authToken) {
@@ -894,7 +1006,6 @@ function AppContent() {
         matchRevealConsentGranted,
         photoRevealOpened,
         revealPausedUntil,
-        chatMessages,
       };
 
       try {
@@ -935,7 +1046,6 @@ function AppContent() {
     authToken,
     acceptedDatePlan,
     activeVoicePromptId,
-    chatMessages,
     matchRevealConsentGranted,
     photoRevealOpened,
     memberStateLoaded,
@@ -1054,51 +1164,49 @@ function AppContent() {
     setPhotoRevealOpened(false);
   };
 
-  const sendChatMessage = () => {
+  const sendChatMessage = async () => {
     const text = chatDraft.trim().replace(/\s+/g, ' ').slice(0, 500);
 
-    if (!text) {
+    if (!text || chatSending || !activePeerId || !authToken) {
       return;
     }
 
-    const moderationTags = getChatModerationTags(text);
-    const flagged = moderationTags.length > 0;
-    const nextMessage: ChatMessage = {
-      id: `${authMemberId ?? 'member'}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-      matchId: selectedMatch.id,
-      author: 'member',
-      text,
-      createdAt: new Date().toISOString(),
-      flagged,
-      status: flagged ? 'held' : 'sent',
-      flagReason: flagged ? moderationTags.join(' + ') : undefined,
-    };
+    setChatSending(true);
+    setChatError(null);
 
-    setChatMessages((current) => [...current, nextMessage].slice(-120));
-    setChatDraft('');
+    try {
+      const response = await fetch(messagesEndpoint, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${authToken}`,
+        },
+        body: JSON.stringify({ toMemberId: activePeerId, text }),
+      });
 
-    // Held messages wait for host review, so the match should not reply to them.
-    if (flagged) {
-      return;
+      if (response.status === 401) {
+        await signOut();
+        return;
+      }
+
+      if (!response.ok) {
+        throw new Error(`Send failed: ${response.status}`);
+      }
+
+      const data = (await response.json()) as { message?: ThreadMessage };
+
+      if (data.message) {
+        const delivered = data.message;
+        // Append our own message immediately; the peer receives it via their poll.
+        setThreadMessages((current) => [...current, delivered].slice(-120));
+      }
+
+      setChatDraft('');
+    } catch {
+      setChatError('Could not send. Check your connection and try again.');
+    } finally {
+      setChatSending(false);
     }
-
-    const replyMatch = selectedMatch;
-    const timeout = setTimeout(() => {
-      const replyMessage: ChatMessage = {
-        id: `${replyMatch.id}-reply-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-        matchId: replyMatch.id,
-        author: 'match',
-        text: buildMatchReply(replyMatch, text),
-        createdAt: new Date().toISOString(),
-        flagged: false,
-        status: 'sent',
-      };
-
-      setChatMessages((current) => [...current, replyMessage].slice(-120));
-      replyTimeoutsRef.current = replyTimeoutsRef.current.filter((handle) => handle !== timeout);
-    }, 1200);
-
-    replyTimeoutsRef.current = [...replyTimeoutsRef.current, timeout];
   };
 
   const toggleAuthMode = () => {
@@ -1427,10 +1535,14 @@ function AppContent() {
                 <View>
                   <Text style={styles.kicker}>Conversation</Text>
                   <Text style={styles.sectionTitle}>
-                    {selectedChatMessages.length ? `${selectedChatMessages.length} messages` : 'Start from a cultural cue'}
+                    {threadMessages.length ? `${threadMessages.length} messages` : 'Start from a cultural cue'}
                   </Text>
                 </View>
-                <Ionicons name="lock-closed-outline" size={22} color="#0c5a41" />
+                {threadLoading ? (
+                  <ActivityIndicator size="small" color="#0c5a41" />
+                ) : (
+                  <Ionicons name="lock-closed-outline" size={22} color="#0c5a41" />
+                )}
               </View>
               <View style={styles.chatList}>
                 <View style={[styles.chatBubble, styles.chatBubbleHost]}>
@@ -1442,7 +1554,14 @@ function AppContent() {
                     Keep the first thread blind: prompts, voice pace, and hosted-date comfort stay in bounds.
                   </Text>
                 </View>
-                {selectedChatMessages.length === 0 ? (
+                {!chatAvailable ? (
+                  <View style={styles.emptyChatBox}>
+                    <Ionicons name="people-outline" size={18} color="#0c5a41" />
+                    <Text style={styles.emptyChatText}>
+                      Live chat opens once you match with a real member. Sample matches are for preview only.
+                    </Text>
+                  </View>
+                ) : threadMessages.length === 0 ? (
                   <View style={styles.emptyChatBox}>
                     <Ionicons name="sparkles-outline" size={18} color="#0c5a41" />
                     <Text style={styles.emptyChatText}>
@@ -1450,20 +1569,21 @@ function AppContent() {
                     </Text>
                   </View>
                 ) : null}
-                {selectedChatMessages.map((message) => {
+                {threadMessages.map((message) => {
                   const held = message.status === 'held';
+                  const mine = message.author === 'me';
 
                   return (
                     <View
                       key={message.id}
                       style={[
                         styles.chatBubble,
-                        message.author === 'member' ? styles.chatBubbleMine : styles.chatBubbleOther,
+                        mine ? styles.chatBubbleMine : styles.chatBubbleOther,
                         held ? styles.chatBubbleHeld : null,
                       ]}
                     >
                       <View style={styles.chatBubbleHeader}>
-                        <Text style={styles.chatAuthor}>{message.author === 'member' ? 'You' : selectedMatch.handle}</Text>
+                        <Text style={styles.chatAuthor}>{mine ? 'You' : selectedMatch.handle}</Text>
                         <Text style={styles.chatTime}>{formatChatTime(message.createdAt)}</Text>
                       </View>
                       <Text style={styles.chatMessageText}>{message.text}</Text>
@@ -1472,6 +1592,8 @@ function AppContent() {
                           <Ionicons name="alert-circle-outline" size={14} color="#9f201a" />
                           <Text style={styles.heldBadgeText}>Held for host: {message.flagReason}</Text>
                         </View>
+                      ) : mine ? (
+                        <Text style={styles.chatReceipt}>{message.readAt ? 'Read' : 'Delivered'}</Text>
                       ) : null}
                     </View>
                   );
@@ -1515,20 +1637,34 @@ function AppContent() {
                   color={chatDraftModerationTags.length ? '#9f201a' : '#0c5a41'}
                 />
                 <Text style={[styles.moderationText, chatDraftModerationTags.length ? styles.moderationTextHeld : null]}>
-                  {chatDraftModerationTags.length
-                    ? `Will be held: ${chatDraftModerationTags.join(', ')}`
-                    : 'Ready for blind-safe delivery'}
+                  {!chatAvailable
+                    ? 'Live delivery opens with a real match'
+                    : chatDraftModerationTags.length
+                      ? `Will be held: ${chatDraftModerationTags.join(', ')}`
+                      : 'Ready for blind-safe delivery'}
                 </Text>
               </View>
+              {chatError ? <Text style={styles.chatErrorText}>{chatError}</Text> : null}
               <Pressable
                 accessibilityRole="button"
-                disabled={!chatDraft.trim()}
+                disabled={!chatDraft.trim() || !chatAvailable || chatSending}
                 onPress={sendChatMessage}
-                style={[styles.saveButton, !chatDraft.trim() ? styles.buttonDisabled : null]}
+                style={[
+                  styles.saveButton,
+                  !chatDraft.trim() || !chatAvailable || chatSending ? styles.buttonDisabled : null,
+                ]}
               >
-                <Ionicons name="send-outline" size={17} color="#ffffff" />
+                {chatSending ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <Ionicons name="send-outline" size={17} color="#ffffff" />
+                )}
                 <Text style={styles.saveButtonText}>
-                  {chatDraftModerationTags.length ? 'Send to host review' : 'Send message'}
+                  {chatSending
+                    ? 'Sending…'
+                    : chatDraftModerationTags.length
+                      ? 'Send to host review'
+                      : 'Send message'}
                 </Text>
               </Pressable>
             </View>
@@ -1550,6 +1686,7 @@ function AppContent() {
           <View style={styles.rankedList}>
             {rankedMatches.map((match) => {
               const active = match.id === selectedMatch.id;
+              const unread = unreadByPeer[match.id] ?? 0;
 
               return (
                 <Pressable
@@ -1563,7 +1700,14 @@ function AppContent() {
                     <Text style={styles.rankedScoreLabel}>fit</Text>
                   </View>
                   <View style={styles.rankedCopy}>
-                    <Text style={styles.rankedName}>{match.handle}</Text>
+                    <View style={styles.rankedNameRow}>
+                      <Text style={styles.rankedName}>{match.handle}</Text>
+                      {unread > 0 ? (
+                        <View style={styles.unreadPill}>
+                          <Text style={styles.unreadPillText}>{unread > 9 ? '9+' : `${unread}`}</Text>
+                        </View>
+                      ) : null}
+                    </View>
                     <Text style={styles.rankedMeta}>
                       {match.city} - {match.distance}
                     </Text>
@@ -2102,6 +2246,7 @@ function AppContent() {
       <View style={styles.tabBar}>
         {tabs.map((tab) => {
           const active = tab.label === activeTab;
+          const badge = tab.label === 'Talks' ? totalUnread : 0;
 
           return (
             <Pressable
@@ -2110,11 +2255,18 @@ function AppContent() {
               onPress={() => setActiveTab(tab.label)}
               style={styles.tabItem}
             >
-              <Ionicons
-                name={tab.icon as keyof typeof Ionicons.glyphMap}
-                size={21}
-                color={active ? '#c62b23' : '#667064'}
-              />
+              <View style={styles.tabIconWrap}>
+                <Ionicons
+                  name={tab.icon as keyof typeof Ionicons.glyphMap}
+                  size={21}
+                  color={active ? '#c62b23' : '#667064'}
+                />
+                {badge > 0 ? (
+                  <View style={styles.tabBadge}>
+                    <Text style={styles.tabBadgeText}>{badge > 9 ? '9+' : `${badge}`}</Text>
+                  </View>
+                ) : null}
+              </View>
               <Text style={[styles.tabText, active ? styles.tabTextActive : null]}>{tab.label}</Text>
             </Pressable>
           );
@@ -2421,6 +2573,25 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '900',
   },
+  rankedNameRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  unreadPill: {
+    minWidth: 20,
+    height: 20,
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#c62b23',
+  },
+  unreadPillText: {
+    color: '#ffffff',
+    fontSize: 11,
+    fontWeight: '900',
+  },
   rankedMeta: {
     color: '#667064',
     fontSize: 12,
@@ -2667,6 +2838,18 @@ const styles = StyleSheet.create({
     lineHeight: 15,
     fontWeight: '900',
     textTransform: 'uppercase',
+  },
+  chatReceipt: {
+    alignSelf: 'flex-end',
+    color: '#667064',
+    fontSize: 10,
+    fontWeight: '800',
+    textTransform: 'uppercase',
+  },
+  chatErrorText: {
+    color: '#9f201a',
+    fontSize: 12,
+    fontWeight: '800',
   },
   quickReplyGrid: {
     flexDirection: 'row',
@@ -3034,6 +3217,26 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 3,
+  },
+  tabIconWrap: {
+    position: 'relative',
+  },
+  tabBadge: {
+    position: 'absolute',
+    top: -6,
+    right: -10,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 5,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#c62b23',
+  },
+  tabBadgeText: {
+    color: '#ffffff',
+    fontSize: 10,
+    fontWeight: '900',
   },
   tabText: {
     color: '#667064',

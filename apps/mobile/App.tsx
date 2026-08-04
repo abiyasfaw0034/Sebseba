@@ -356,6 +356,9 @@ const inboxEndpoint = `${apiBaseUrl}/api/inbox`;
 const authRegisterEndpoint = `${apiBaseUrl}/api/auth/register`;
 const authLoginEndpoint = `${apiBaseUrl}/api/auth/login`;
 const authSessionEndpoint = `${apiBaseUrl}/api/auth/session`;
+const authLogoutEndpoint = `${apiBaseUrl}/api/auth/logout`;
+const authRequestResetEndpoint = `${apiBaseUrl}/api/auth/request-reset`;
+const authResetEndpoint = `${apiBaseUrl}/api/auth/reset`;
 
 type CandidateSummary = {
   id: string;
@@ -598,6 +601,15 @@ function AppContent() {
   const [authPasswordInput, setAuthPasswordInput] = useState('');
   const [authError, setAuthError] = useState<string | null>(null);
   const [authSubmitting, setAuthSubmitting] = useState(false);
+  const [signingOutEverywhere, setSigningOutEverywhere] = useState(false);
+  // Forgot-password flow: 'request' asks for a reset token, 'confirm' sets the new password.
+  const [resetOpen, setResetOpen] = useState(false);
+  const [resetStage, setResetStage] = useState<'request' | 'confirm'>('request');
+  const [resetToken, setResetToken] = useState('');
+  const [resetPasswordInput, setResetPasswordInput] = useState('');
+  const [resetSubmitting, setResetSubmitting] = useState(false);
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [resetNotice, setResetNotice] = useState<string | null>(null);
   const saveRequestRef = useRef(0);
   const { width } = useWindowDimensions();
 
@@ -675,7 +687,23 @@ function AppContent() {
     },
   ];
 
-  const signOut = async () => {
+  // Revokes the session on the server so the token can't be reused, then clears local state.
+  // `scope` 'all' signs out every device; 'current' (default) just this one.
+  const signOut = async (scope: 'current' | 'all' = 'current') => {
+    const token = authToken;
+
+    if (token) {
+      try {
+        await fetch(authLogoutEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+          body: JSON.stringify({ scope }),
+        });
+      } catch {
+        // Best effort — a network failure shouldn't trap the user in a signed-in UI.
+      }
+    }
+
     await clearSessionToken();
     setAuthToken(null);
     setAuthMemberId(null);
@@ -683,7 +711,16 @@ function AppContent() {
     setAuthPasswordInput('');
     setAuthError(null);
     setMemberStateLoaded(false);
+    setSigningOutEverywhere(false);
     setAuthStatus('unauthenticated');
+  };
+
+  const signOutEverywhere = async () => {
+    if (signingOutEverywhere) {
+      return;
+    }
+    setSigningOutEverywhere(true);
+    await signOut('all');
   };
 
   useEffect(() => {
@@ -1264,6 +1301,117 @@ function AppContent() {
     }
   };
 
+  const openResetFlow = () => {
+    setResetOpen(true);
+    setResetStage('request');
+    setResetToken('');
+    setResetPasswordInput('');
+    setResetError(null);
+    setResetNotice(null);
+    setAuthError(null);
+  };
+
+  const closeResetFlow = () => {
+    setResetOpen(false);
+    setResetError(null);
+    setResetNotice(null);
+  };
+
+  const requestReset = async () => {
+    if (resetSubmitting) {
+      return;
+    }
+
+    const email = authEmailInput.trim().toLowerCase();
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setResetError('Enter the email for your account first.');
+      return;
+    }
+
+    setResetSubmitting(true);
+    setResetError(null);
+    setResetNotice(null);
+
+    try {
+      const response = await fetch(authRequestResetEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email }),
+      });
+
+      const data = (await response.json().catch(() => null)) as
+        | { message?: string; devResetToken?: string; error?: string }
+        | null;
+
+      if (!response.ok) {
+        setResetError(data?.error ?? 'Could not start a reset. Please try again.');
+        return;
+      }
+
+      if (data?.devResetToken) {
+        // Dev convenience: no email is sent, so the server hands the token back directly.
+        setResetToken(data.devResetToken);
+        setResetStage('confirm');
+        setResetNotice('Reset code ready. Choose a new password below.');
+      } else {
+        setResetStage('confirm');
+        setResetNotice(
+          data?.message ?? 'If that account exists, a reset link was sent. Paste the code to continue.',
+        );
+      }
+    } catch {
+      setResetError('Could not reach the server. Check your connection and try again.');
+    } finally {
+      setResetSubmitting(false);
+    }
+  };
+
+  const confirmReset = async () => {
+    if (resetSubmitting) {
+      return;
+    }
+
+    if (!resetToken.trim()) {
+      setResetError('Enter the reset code from your email.');
+      return;
+    }
+
+    if (resetPasswordInput.length < 8) {
+      setResetError('Password must be at least 8 characters.');
+      return;
+    }
+
+    setResetSubmitting(true);
+    setResetError(null);
+
+    try {
+      const response = await fetch(authResetEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ token: resetToken.trim(), password: resetPasswordInput }),
+      });
+
+      const data = (await response.json().catch(() => null)) as { error?: string } | null;
+
+      if (!response.ok) {
+        setResetError(data?.error ?? 'Could not reset your password. Please try again.');
+        return;
+      }
+
+      setResetOpen(false);
+      setResetToken('');
+      setResetPasswordInput('');
+      setResetNotice(null);
+      setAuthMode('login');
+      setAuthError('Password updated. Sign in with your new password.');
+    } catch {
+      setResetError('Could not reach the server. Check your connection and try again.');
+    } finally {
+      setResetSubmitting(false);
+    }
+  };
+
   if (authStatus === 'checking') {
     return (
       <SafeAreaView style={styles.safeArea}>
@@ -1358,6 +1506,85 @@ function AppContent() {
                 {authMode === 'login' ? 'New here? Create an account' : 'Have an account? Sign in'}
               </Text>
             </Pressable>
+
+            {authMode === 'login' && !resetOpen ? (
+              <Pressable accessibilityRole="button" onPress={openResetFlow} style={styles.authToggle}>
+                <Text style={styles.forgotText}>Forgot password?</Text>
+              </Pressable>
+            ) : null}
+
+            {resetOpen ? (
+              <View style={styles.resetPanel}>
+                <View style={styles.resetHeader}>
+                  <Text style={styles.resetTitle}>Reset your password</Text>
+                  <Pressable accessibilityLabel="Close reset" onPress={closeResetFlow}>
+                    <Ionicons name="close" size={18} color="#5b6b5f" />
+                  </Pressable>
+                </View>
+
+                {resetStage === 'request' ? (
+                  <>
+                    <Text style={styles.resetHint}>
+                      We&apos;ll create a reset code for the email above.
+                    </Text>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={resetSubmitting}
+                      onPress={requestReset}
+                      style={[styles.resetButton, resetSubmitting ? styles.buttonDisabled : null]}
+                    >
+                      <Text style={styles.resetButtonText}>
+                        {resetSubmitting ? 'Please wait' : 'Send reset code'}
+                      </Text>
+                    </Pressable>
+                  </>
+                ) : (
+                  <>
+                    <View style={styles.authField}>
+                      <Text style={styles.answerLabel}>Reset code</Text>
+                      <TextInput
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                        multiline
+                        onChangeText={setResetToken}
+                        placeholder="Paste the reset code"
+                        placeholderTextColor="#7a8377"
+                        style={[styles.authInput, styles.resetCodeInput]}
+                        value={resetToken}
+                      />
+                    </View>
+                    <View style={styles.authField}>
+                      <Text style={styles.answerLabel}>New password</Text>
+                      <TextInput
+                        autoCapitalize="none"
+                        autoComplete="new-password"
+                        autoCorrect={false}
+                        onChangeText={setResetPasswordInput}
+                        placeholder="At least 8 characters"
+                        placeholderTextColor="#7a8377"
+                        secureTextEntry
+                        style={styles.authInput}
+                        textContentType="newPassword"
+                        value={resetPasswordInput}
+                      />
+                    </View>
+                    <Pressable
+                      accessibilityRole="button"
+                      disabled={resetSubmitting}
+                      onPress={confirmReset}
+                      style={[styles.resetButton, resetSubmitting ? styles.buttonDisabled : null]}
+                    >
+                      <Text style={styles.resetButtonText}>
+                        {resetSubmitting ? 'Please wait' : 'Set new password'}
+                      </Text>
+                    </Pressable>
+                  </>
+                )}
+
+                {resetNotice ? <Text style={styles.resetNotice}>{resetNotice}</Text> : null}
+                {resetError ? <Text style={styles.chatErrorText}>{resetError}</Text> : null}
+              </View>
+            ) : null}
           </View>
 
           <View style={[styles.safetyRow, { width: cardWidth }]}>
@@ -1486,7 +1713,7 @@ function AppContent() {
             >
               <Ionicons name="create-outline" size={21} color="#1f241f" />
             </Pressable>
-            <Pressable accessibilityLabel="Sign out" onPress={signOut} style={styles.iconButton}>
+            <Pressable accessibilityLabel="Sign out" onPress={() => signOut()} style={styles.iconButton}>
               <Ionicons name="log-out-outline" size={21} color="#c62b23" />
             </Pressable>
           </View>
@@ -2191,9 +2418,20 @@ function AppContent() {
               <Text style={styles.lensValue}>{syncDetail}</Text>
             </View>
           </View>
-          <Pressable accessibilityRole="button" onPress={signOut} style={styles.saveButton}>
+          <Pressable accessibilityRole="button" onPress={() => signOut()} style={styles.saveButton}>
             <Ionicons name="log-out-outline" size={17} color="#ffffff" />
             <Text style={styles.saveButtonText}>Sign out</Text>
+          </Pressable>
+          <Pressable
+            accessibilityRole="button"
+            disabled={signingOutEverywhere}
+            onPress={signOutEverywhere}
+            style={styles.signOutAllButton}
+          >
+            <Ionicons name="shield-checkmark-outline" size={16} color="#0c5a41" />
+            <Text style={styles.signOutAllText}>
+              {signingOutEverywhere ? 'Signing out…' : 'Sign out of all devices'}
+            </Text>
           </Pressable>
         </View>
 
@@ -2346,6 +2584,75 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   authToggleText: {
+    color: '#0c5a41',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  forgotText: {
+    color: '#5b6b5f',
+    fontSize: 13,
+    fontWeight: '700',
+  },
+  resetPanel: {
+    marginTop: 14,
+    padding: 14,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#d6e2d6',
+    backgroundColor: '#f5f9f4',
+    gap: 10,
+  },
+  resetHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  resetTitle: {
+    color: '#1f241f',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  resetHint: {
+    color: '#5b6b5f',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  resetCodeInput: {
+    minHeight: 64,
+    textAlignVertical: 'top',
+  },
+  resetButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    paddingVertical: 12,
+    borderRadius: 8,
+    backgroundColor: '#0c5a41',
+  },
+  resetButtonText: {
+    color: '#ffffff',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  resetNotice: {
+    color: '#0c5a41',
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  signOutAllButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+    marginTop: 10,
+    paddingVertical: 11,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#0c5a41',
+    backgroundColor: '#ffffff',
+  },
+  signOutAllText: {
     color: '#0c5a41',
     fontSize: 13,
     fontWeight: '900',

@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { corsPreflight, withCors } from "@/lib/http";
-import { getAuthenticatedMemberId } from "@/lib/auth";
+import { authenticateRequest } from "@/lib/auth";
 import { getThread, sendMessage } from "@/lib/conversations";
 
 export const dynamic = "force-dynamic";
@@ -14,7 +14,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 export const OPTIONS = () => corsPreflight(methods);
 
 export const GET = async (request: NextRequest) => {
-  const memberId = getAuthenticatedMemberId(request);
+  const memberId = (await authenticateRequest(request))?.memberId ?? null;
 
   if (!memberId) {
     return withCors(NextResponse.json({ error: "Authentication required." }, { status: 401 }), methods);
@@ -35,7 +35,7 @@ export const GET = async (request: NextRequest) => {
 };
 
 export const POST = async (request: NextRequest) => {
-  const memberId = getAuthenticatedMemberId(request);
+  const memberId = (await authenticateRequest(request))?.memberId ?? null;
 
   if (!memberId) {
     return withCors(NextResponse.json({ error: "Authentication required." }, { status: 401 }), methods);

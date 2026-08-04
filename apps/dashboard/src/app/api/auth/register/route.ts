@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { corsPreflight, withCors } from "@/lib/http";
-import { createAccount, isValidEmail, isValidPassword, normalizeEmail, signToken } from "@/lib/auth";
+import { createAccount, isValidEmail, isValidPassword, normalizeEmail, signToken, startSession } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -32,7 +32,9 @@ export const POST = async (request: NextRequest) => {
 
   try {
     const account = await createAccount(email, password);
-    const token = signToken(account);
+    const label = request.headers.get("user-agent") ?? "Unknown device";
+    const sid = await startSession(account.email, label);
+    const token = signToken(account, sid);
 
     return withCors(
       NextResponse.json({ token, memberId: account.id, email: account.email }, { status: 201 }),

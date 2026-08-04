@@ -2,7 +2,7 @@ import { mkdir, readFile, writeFile } from "fs/promises";
 import path from "path";
 import { NextRequest, NextResponse } from "next/server";
 import { corsPreflight, withCors } from "@/lib/http";
-import { getAuthenticatedMemberId } from "@/lib/auth";
+import { authenticateRequest } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -210,7 +210,7 @@ const writeStore = async (store: MemberStateStore) => {
 export const OPTIONS = () => corsPreflight("GET, PUT, OPTIONS");
 
 export const GET = async (request: NextRequest) => {
-  const memberId = getAuthenticatedMemberId(request);
+  const memberId = (await authenticateRequest(request))?.memberId ?? null;
 
   if (!memberId) {
     return withCors(NextResponse.json({ error: "Authentication required." }, { status: 401 }));
@@ -223,7 +223,7 @@ export const GET = async (request: NextRequest) => {
 };
 
 export const PUT = async (request: NextRequest) => {
-  const memberId = getAuthenticatedMemberId(request);
+  const memberId = (await authenticateRequest(request))?.memberId ?? null;
 
   if (!memberId) {
     return withCors(NextResponse.json({ error: "Authentication required." }, { status: 401 }));

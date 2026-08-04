@@ -11,3 +11,17 @@ export const withCors = (response: NextResponse, methods = "GET, POST, PUT, OPTI
 
 export const corsPreflight = (methods?: string): NextResponse =>
   withCors(new NextResponse(null, { status: 204 }), methods);
+
+/** Best-effort client IP from proxy headers, used to key rate limits. Falls back to "unknown". */
+export const getClientIp = (request: Request): string => {
+  const forwarded = request.headers.get("x-forwarded-for");
+
+  if (forwarded) {
+    const first = forwarded.split(",")[0]?.trim();
+    if (first) {
+      return first;
+    }
+  }
+
+  return request.headers.get("x-real-ip")?.trim() || "unknown";
+};

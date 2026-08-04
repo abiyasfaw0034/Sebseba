@@ -2,7 +2,7 @@ import { readFile } from "fs/promises";
 import path from "path";
 import { NextRequest, NextResponse } from "next/server";
 import { corsPreflight, withCors } from "@/lib/http";
-import { getAuthenticatedMemberId } from "@/lib/auth";
+import { authenticateRequest } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -111,7 +111,7 @@ const readCandidates = async (selfId: string): Promise<CandidateSummary[]> => {
 export const OPTIONS = () => corsPreflight(methods);
 
 export const GET = async (request: NextRequest) => {
-  const memberId = getAuthenticatedMemberId(request);
+  const memberId = (await authenticateRequest(request))?.memberId ?? null;
 
   if (!memberId) {
     return withCors(NextResponse.json({ error: "Authentication required." }, { status: 401 }), methods);

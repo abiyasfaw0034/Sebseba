@@ -281,6 +281,42 @@ const mostCommon = (values: string[]): string | null => {
   return best;
 };
 
+export type MemberExportRow = {
+  code: string;
+  name: string;
+  city: string;
+  language: string;
+  status: string;
+  score: number;
+  promptsAnswered: number;
+  voiceSaved: number;
+  onboardingComplete: boolean;
+  dateAccepted: boolean;
+  revealRequested: boolean;
+  revealOpened: boolean;
+};
+
+/** Flat member rows for the CSV export on the ops console. */
+export const getMemberExportRows = async (): Promise<MemberExportRow[]> => {
+  const [members, accounts] = await Promise.all([readMembers(), listAccountSummaries()]);
+  const emailById = new Map(accounts.map((account) => [account.id, account.email]));
+
+  return members.map((member) => ({
+    code: shortId(member.id),
+    name: nameFromEmail(emailById.get(member.id), member.id),
+    city: member.profile.city,
+    language: member.profile.languages.join(" + "),
+    status: memberStatus(member),
+    score: readinessScore(member),
+    promptsAnswered: member.answeredCount,
+    voiceSaved: member.savedVoiceCount,
+    onboardingComplete: member.onboardingComplete,
+    dateAccepted: member.acceptedDatePlan,
+    revealRequested: member.photoRevealRequested,
+    revealOpened: member.photoRevealOpened,
+  }));
+};
+
 export const getDashboardData = async (): Promise<DashboardData> => {
   const [members, accounts, heldChat] = await Promise.all([
     readMembers(),

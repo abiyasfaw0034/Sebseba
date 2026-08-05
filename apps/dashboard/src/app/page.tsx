@@ -1,10 +1,12 @@
 import {
   AlertTriangle,
+  BarChart3,
   Bell,
   CalendarDays,
   CheckCircle2,
   ChevronRight,
   Coffee,
+  Download,
   Filter,
   Heart,
   MapPin,
@@ -19,6 +21,7 @@ import {
 } from "lucide-react";
 import Image from "next/image";
 import { getDashboardData } from "@/lib/dashboard";
+import { getEventInventory, getEventReport } from "@/lib/events";
 import styles from "./page.module.css";
 
 export const dynamic = "force-dynamic";
@@ -34,16 +37,15 @@ const prompts = [
   { text: "Pick a meal to share from one mesob.", category: "Food" },
 ];
 
-const events = [
-  { title: "Blind Buna Rooms", time: "Today, 7:00 PM", seats: "18 seats", fill: "74%" },
-  { title: "Habesha Story Swap", time: "Wed, 6:30 PM", seats: "12 seats", fill: "62%" },
-  { title: "Addis Art Walk", time: "Sat, 4:00 PM", seats: "24 seats", fill: "81%" },
-];
-
 export default async function Home() {
-  const dashboard = await getDashboardData();
+  const [dashboard, eventInventory, eventReport] = await Promise.all([
+    getDashboardData(),
+    getEventInventory(),
+    getEventReport(),
+  ]);
   const dashboardMetrics = dashboard.metrics;
   const visibleSafetyReviews = dashboard.safetyReviews;
+  const upcomingEvents = eventInventory.slice(0, 4);
 
   return (
     <div className={styles.shell}>
@@ -187,6 +189,52 @@ export default async function Home() {
                 })}
               </div>
             </section>
+
+            <section className={styles.workflowPanel} aria-label="Reports">
+              <div className={styles.sectionHeader}>
+                <div>
+                  <span className={styles.kicker}>Reports</span>
+                  <h2>Booking &amp; member exports</h2>
+                </div>
+                <BarChart3 size={19} aria-hidden />
+              </div>
+              <div className={styles.workflowGrid}>
+                <article className={styles.workflowCard}>
+                  <CalendarDays size={20} aria-hidden />
+                  <span>Seats booked</span>
+                  <strong>
+                    {eventReport.seatsBooked}/{eventReport.totalCapacity}
+                  </strong>
+                  <p>{eventReport.fillPercent}% of hosted capacity filled.</p>
+                </article>
+                <article className={styles.workflowCard}>
+                  <UsersRound size={20} aria-hidden />
+                  <span>Members booked</span>
+                  <strong>{eventReport.uniqueMembersBooked}</strong>
+                  <p>distinct members hold a hosted-room seat.</p>
+                </article>
+                <article className={styles.workflowCard}>
+                  <MapPin size={20} aria-hidden />
+                  <span>Top city</span>
+                  <strong>{eventReport.byCity[0]?.city ?? "—"}</strong>
+                  <p>
+                    {eventReport.byCity[0]
+                      ? `${eventReport.byCity[0].seatsBooked} seats across ${eventReport.byCity[0].events} room${eventReport.byCity[0].events === 1 ? "" : "s"}.`
+                      : "no rooms scheduled yet."}
+                  </p>
+                </article>
+              </div>
+              <div className={styles.exportRow}>
+                <a className={styles.secondaryButton} href="/api/reports/export?dataset=members" download>
+                  <Download size={16} aria-hidden />
+                  Members CSV
+                </a>
+                <a className={styles.secondaryButton} href="/api/reports/export?dataset=events" download>
+                  <Download size={16} aria-hidden />
+                  Events CSV
+                </a>
+              </div>
+            </section>
           </div>
 
           <div className={styles.sideColumn}>
@@ -249,25 +297,36 @@ export default async function Home() {
               <div className={styles.sectionHeader}>
                 <div>
                   <span className={styles.kicker}>Hosted dates</span>
-                  <h2>Upcoming rooms</h2>
+                  <h2>
+                    {eventReport.upcomingEvents > 0
+                      ? `${eventReport.upcomingEvents} upcoming room${eventReport.upcomingEvents === 1 ? "" : "s"}`
+                      : "Upcoming rooms"}
+                  </h2>
                 </div>
                 <UsersRound size={19} aria-hidden />
               </div>
               <div className={styles.eventList}>
-                {events.map((event) => (
-                  <article key={event.title}>
+                {upcomingEvents.map((event) => (
+                  <article key={event.id}>
                     <div>
                       <h3>{event.title}</h3>
-                      <span>{event.time}</span>
+                      <span>
+                        {event.whenLabel} · {event.venue}
+                      </span>
                     </div>
                     <div className={styles.eventStats}>
-                      <p>{event.seats}</p>
-                      <div className={styles.progressTrack} aria-label={`${event.fill} filled`}>
-                        <span style={{ width: event.fill }} />
+                      <p>
+                        {event.seatsBooked}/{event.capacity} booked · {event.seatsLeft} left
+                      </p>
+                      <div className={styles.progressTrack} aria-label={`${event.fillPercent}% filled`}>
+                        <span style={{ width: `${event.fillPercent}%` }} />
                       </div>
                     </div>
                   </article>
                 ))}
+                {upcomingEvents.length === 0 ? (
+                  <p className={styles.emptyNote}>No upcoming rooms scheduled.</p>
+                ) : null}
               </div>
             </section>
           </div>

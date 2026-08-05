@@ -77,6 +77,22 @@ type ThreadMessage = {
   readAt: string | null;
 };
 
+// A bookable hosted-date room from the backend event inventory.
+type HostedRoom = {
+  id: string;
+  title: string;
+  description: string;
+  city: string;
+  venue: string;
+  startsAt: string;
+  whenLabel: string;
+  capacity: number;
+  seatsBooked: number;
+  seatsLeft: number;
+  fillPercent: number;
+  booked: boolean;
+};
+
 // One conversation summary for the match inbox / unread badges.
 type InboxSummary = {
   peerId: string;
@@ -353,6 +369,7 @@ const memberStateEndpoint = `${apiBaseUrl}/api/member-state`;
 const candidatesEndpoint = `${apiBaseUrl}/api/candidates`;
 const messagesEndpoint = `${apiBaseUrl}/api/messages`;
 const inboxEndpoint = `${apiBaseUrl}/api/inbox`;
+const eventsEndpoint = `${apiBaseUrl}/api/events`;
 const authRegisterEndpoint = `${apiBaseUrl}/api/auth/register`;
 const authLoginEndpoint = `${apiBaseUrl}/api/auth/login`;
 const authSessionEndpoint = `${apiBaseUrl}/api/auth/session`;
@@ -585,6 +602,10 @@ function AppContent() {
   const [inboxSummaries, setInboxSummaries] = useState<InboxSummary[]>([]);
   const [chatError, setChatError] = useState<string | null>(null);
   const [chatSending, setChatSending] = useState(false);
+  const [hostedRooms, setHostedRooms] = useState<HostedRoom[]>([]);
+  const [roomsLoading, setRoomsLoading] = useState(false);
+  const [roomsError, setRoomsError] = useState<string | null>(null);
+  const [bookingRoomId, setBookingRoomId] = useState<string | null>(null);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>('loading');
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [memberStateLoaded, setMemberStateLoaded] = useState(false);
@@ -938,6 +959,54 @@ function AppContent() {
     };
   }, [authToken]);
 
+  // Load bookable hosted rooms when the Dates tab is open.
+  useEffect(() => {
+    if (!authToken || activeTab !== 'Dates') {
+      return undefined;
+    }
+
+    let cancelled = false;
+
+    const loadRooms = async () => {
+      setRoomsLoading(true);
+      try {
+        const response = await fetch(eventsEndpoint, {
+          headers: { Authorization: `Bearer ${authToken}` },
+        });
+
+        if (response.status === 401) {
+          await signOut();
+          return;
+        }
+
+        if (!response.ok) {
+          throw new Error(`Events load failed: ${response.status}`);
+        }
+
+        const data = (await response.json()) as { events?: HostedRoom[] };
+
+        if (!cancelled) {
+          setHostedRooms(Array.isArray(data.events) ? data.events : []);
+          setRoomsError(null);
+        }
+      } catch {
+        if (!cancelled) {
+          setRoomsError('Could not load hosted rooms. Pull to retry.');
+        }
+      } finally {
+        if (!cancelled) {
+          setRoomsLoading(false);
+        }
+      }
+    };
+
+    loadRooms();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authToken, activeTab]);
+
   // Load and poll the open conversation (Talks tab, real peer), marking it read on open.
   useEffect(() => {
     if (!authToken || activeTab !== 'Talks' || !activePeerId) {
@@ -1199,6 +1268,45 @@ function AppContent() {
     setPhotoRevealRequested(false);
     setMatchRevealConsentGranted(false);
     setPhotoRevealOpened(false);
+  };
+
+  // Book or release a seat in a hosted room, updating the row from the server's response.
+  const toggleRoomBooking = async (room: HostedRoom) => {
+    if (!authToken || bookingRoomId) {
+      return;
+    }
+
+    setBookingRoomId(room.id);
+    setRoomsError(null);
+
+    try {
+      const response = await fetch(eventsEndpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${authToken}` },
+        body: JSON.stringify({ eventId: room.id, action: room.booked ? 'cancel' : 'book' }),
+      });
+
+      if (response.status === 401) {
+        await signOut();
+        return;
+      }
+
+      const data = (await response.json().catch(() => null)) as
+        | { event?: HostedRoom; error?: string }
+        | null;
+
+      if (!response.ok || !data?.event) {
+        setRoomsError(data?.error ?? 'Could not update your booking. Please try again.');
+        return;
+      }
+
+      const updated = data.event;
+      setHostedRooms((current) => current.map((item) => (item.id === updated.id ? updated : item)));
+    } catch {
+      setRoomsError('Could not reach the server. Check your connection and try again.');
+    } finally {
+      setBookingRoomId(null);
+    }
   };
 
   const sendChatMessage = async () => {
@@ -2349,6 +2457,63 @@ function AppContent() {
         <View style={[styles.card, { width: cardWidth }]}>
           <View style={styles.sectionHeader}>
             <View>
+              <Text style={styles.kicker}>Hosted rooms</Text>
+              <Text style={styles.sectionTitle}>Book a seat at a real table</Text>
+            </View>
+            <Ionicons name="people-outline" size={23} color="#0c5a41" />
+          </View>
+
+          {roomsLoading && hostedRooms.length === 0 ? (
+            <ActivityIndicator color="#0c5a41" style={styles.roomsLoading} />
+          ) : null}
+
+          {!roomsLoading && hostedRooms.length === 0 ? (
+            <Text style={styles.roomsEmpty}>No upcoming hosted rooms right now. Check back soon.</Text>
+          ) : null}
+
+          {hostedRooms.map((room) => {
+            const full = room.seatsLeft <= 0 && !room.booked;
+            const busy = bookingRoomId === room.id;
+            return (
+              <View key={room.id} style={[styles.roomRow, room.booked ? styles.roomRowBooked : null]}>
+                <View style={styles.roomCopy}>
+                  <Text style={styles.roomTitle}>{room.title}</Text>
+                  <Text style={styles.roomMeta}>
+                    {room.whenLabel} · {room.venue}
+                  </Text>
+                  <Text style={styles.roomSeats}>
+                    {room.booked ? 'You have a seat · ' : ''}
+                    {room.seatsLeft} of {room.capacity} seats left
+                  </Text>
+                </View>
+                <Pressable
+                  accessibilityRole="button"
+                  disabled={busy || full}
+                  onPress={() => toggleRoomBooking(room)}
+                  style={[
+                    styles.roomButton,
+                    room.booked ? styles.roomButtonBooked : null,
+                    full ? styles.roomButtonDisabled : null,
+                  ]}
+                >
+                  {busy ? (
+                    <ActivityIndicator color={room.booked ? '#0c5a41' : '#ffffff'} size="small" />
+                  ) : (
+                    <Text style={[styles.roomButtonText, room.booked ? styles.roomButtonTextBooked : null]}>
+                      {room.booked ? 'Cancel' : full ? 'Full' : 'Book'}
+                    </Text>
+                  )}
+                </Pressable>
+              </View>
+            );
+          })}
+
+          {roomsError ? <Text style={styles.chatErrorText}>{roomsError}</Text> : null}
+        </View>
+
+        <View style={[styles.card, { width: cardWidth }]}>
+          <View style={styles.sectionHeader}>
+            <View>
               <Text style={styles.kicker}>Safety controls</Text>
               <Text style={styles.sectionTitle}>
                 {revealPauseActive ? 'Reveal is paused for review' : 'Keep the reveal pace mutual'}
@@ -2592,6 +2757,75 @@ const styles = StyleSheet.create({
     color: '#5b6b5f',
     fontSize: 13,
     fontWeight: '700',
+  },
+  roomsLoading: {
+    marginVertical: 12,
+  },
+  roomsEmpty: {
+    color: '#5b6b5f',
+    fontSize: 13,
+    fontWeight: '600',
+    marginTop: 8,
+  },
+  roomRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginTop: 12,
+    padding: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: '#e0e6dd',
+    backgroundColor: '#ffffff',
+  },
+  roomRowBooked: {
+    borderColor: '#0c5a41',
+    backgroundColor: '#f2f8f1',
+  },
+  roomCopy: {
+    flex: 1,
+    gap: 3,
+  },
+  roomTitle: {
+    color: '#1f241f',
+    fontSize: 15,
+    fontWeight: '900',
+  },
+  roomMeta: {
+    color: '#5b6b5f',
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  roomSeats: {
+    color: '#0c5a41',
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  roomButton: {
+    minWidth: 74,
+    minHeight: 38,
+    paddingHorizontal: 14,
+    borderRadius: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0c5a41',
+  },
+  roomButtonBooked: {
+    backgroundColor: '#ffffff',
+    borderWidth: 1,
+    borderColor: '#0c5a41',
+  },
+  roomButtonDisabled: {
+    backgroundColor: '#c3ccc0',
+  },
+  roomButtonText: {
+    color: '#ffffff',
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  roomButtonTextBooked: {
+    color: '#0c5a41',
   },
   resetPanel: {
     marginTop: 14,

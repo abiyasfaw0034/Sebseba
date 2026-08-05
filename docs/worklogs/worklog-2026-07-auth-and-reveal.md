@@ -323,3 +323,108 @@ stay in the page and are matched to the data by index.
 - Push notifications (#4) — needs a device + EAS push token (parked).
 - Reports + real hosted-event inventory for the dashboard; move the file store to a database.
 - Auth hardening items listed above.
+
+## Auth hardening (2026-08-04)
+
+The accounts + token system was stateless: a signed HMAC token stayed valid until its 30-day
+expiry with no way to revoke it, logout only dropped the token client-side, there was no
+throttle on login guessing, and there was no password recovery. This pass closes those gaps.
+
+### Revocable sessions — `apps/dashboard/src/lib/auth.ts`
+Each account now keeps a `sessions: StoredSession[]` list (`{ sid, createdAt, lastSeenAt,
+label }`, capped at 12 most-recent). Tokens carry a `sid`; `verifyToken` still checks the
+signature/expiry statelessly, but a new async `authenticateRequest(request)` ALSO loads the
+account and confirms the `sid` is still active — so revoking a session immediately invalidates
+its token. Helpers: `startSession`, `listSessions`, `revokeSession`, `revokeOtherSessions`,
+`revokeAllSessions`. Account reads go through `normalizeAccount` so older records without the
+new fields load cleanly, and mutations go through a single `mutateAccount(email, fn)` helper.
+
+All four protected routes (`member-state`, `messages`, `inbox`, `candidates`) and the session
+route switched from the old sync `getAuthenticatedMemberId` to `await authenticateRequest`, so
+revocation is enforced everywhere. `login` and `register` now call `startSession` and stamp the
+`sid` into the token (session label = the request's user-agent).
+
+### New auth routes
+- `POST /api/auth/logout` — `{ scope: "current" | "others" | "all" }` revokes the current
+  session, every other session, or all of them.
+- `GET /api/auth/sessions` — lists active sessions (flags the current one);
+  `DELETE /api/auth/sessions?sid=` revokes one specific device.
+- `POST /api/auth/request-reset` — rate-limited; issues a single-use, 30-minute signed reset
+  token bound to a per-account nonce. No email provider is wired up, so in development the token
+  is returned in the response (`devResetToken`); in production it is withheld.
+- `POST /api/auth/reset` — `{ token, password }` verifies the nonce, sets a new password
+  (fresh salt/hash), rotates the nonce (making the token single-use), and revokes ALL sessions.
+
+### Rate limiting — `apps/dashboard/src/lib/rate-limit.ts`
+In-memory sliding-window limiter (`hitRateLimit` / `clearRateLimit`) plus `getClientIp` in
+`http.ts`. Login is limited per email+IP (8 / 15 min) and per IP (40 / 15 min); a successful
+login clears the email+IP window. Reset request/confirm are limited per IP. 429 responses carry
+a `Retry-After` header. This is single-process only — documented to swap for Redis/Upstash when
+the API scales past one instance.
+
+### Mobile — `apps/mobile/App.tsx`
+`signOut(scope)` now POSTs `/api/auth/logout` (best-effort) before clearing local state, so the
+token is revoked server-side; a "Sign out of all devices" button on the Me tab calls it with
+`scope: "all"`. A "Forgot password?" flow on the login screen requests a reset code and, in a
+second step, accepts the code + a new password (the dev server returns the code directly since
+no email is sent). Fixed the two `onPress={signOut}` handlers to `() => signOut()` so the
+gesture event isn't passed as the scope.
+
+### Verification (all green)
+| Check | Result |
+|---|---|
+| `apps/dashboard` `tsc` + `eslint` + `next build` | clean (all 8 auth routes compile) |
+| `apps/mobile` `tsc` + `expo export --platform web` | clean, bundles |
+| Live: register + login (2 sessions) → `sign out everywhere` | both tokens + a protected route return 401 afterwards; `revoked: 2` |
+| Live: `DELETE /api/auth/sessions?sid=` on one device | revoked device → 401, kept device → 200 |
+| Live: login rate limit | 401 for attempts 1–8, then 429 |
+| Live: password reset (dev token) | new password works, old password 401, old session 401, reused reset token 400 |
+
+### Still open after this
+- Deliver reset tokens by email (SMTP/provider) instead of returning them in dev.
+- Move the rate limiter to a shared store (Redis/Upstash) before running multiple API instances.
+- Optional: surface the session list in the mobile Me tab so members can see/revoke devices.
+
+## Hosted-event inventory, booking & dashboard reports (2026-08-05)
+
+The ops console's "hosted dates" list was hardcoded and there was no way for members to book a
+seat. This pass adds a real event store, member booking, live dashboard inventory, and reports.
+
+### Event store — `apps/dashboard/src/lib/events.ts`
+Backs `.data/events.json`. `HostedEvent { id, title, description, city, venue, startsAt,
+capacity, bookings: EventBooking[] }`; a booking is `{ memberId, status: booked|cancelled,
+bookedAt, updatedAt }`. On first read (empty/missing file) it seeds three upcoming rooms with
+dates relative to now, so a fresh install has bookable inventory. Seat math counts only
+`status === "booked"`. Public helpers: `listUpcomingEvents(viewerId)` (member-facing, flags the
+caller's booked rooms, upcoming-only, soonest first), `getEventInventory()` (dashboard rows),
+`bookEvent` / `cancelBooking` (capacity-enforced, idempotent re-book, re-book after cancel),
+`getEventReport()` (totals + city breakdown), `getEventExportRows()` (CSV). `whenLabel` formats
+the start as Today/Tomorrow/weekday/short-date via `Intl.DateTimeFormat`.
+
+### Routes
+- `GET /api/events` (auth) — upcoming rooms with the caller's booked flag.
+- `POST /api/events` (auth) — `{ eventId, action: "book" | "cancel" }`; 409 when full/past,
+  404 when the room is unknown.
+- `GET /api/reports/export?dataset=members|events` — streams CSV (`Content-Disposition:
+  attachment`). Gated by an optional `ABIYASFAW_OPS_TOKEN` (header `x-ops-key` or `?key=`); open
+  in local dev when the env var is unset. Added `getMemberExportRows()` to `src/lib/dashboard.ts`.
+
+### Dashboard — `apps/dashboard/src/app/page.tsx`
+The hosted-dates panel now renders real inventory (seats booked/capacity, seats left, fill %
+from actual bookings) and the heading counts upcoming rooms. A new **Reports** section shows
+seats booked vs capacity, unique members booked, and the top city, with **Members CSV** /
+**Events CSV** download links. New CSS: `.eventList p.emptyNote`, `.exportRow`.
+
+### Mobile — `apps/mobile/App.tsx`
+The Dates tab gained a **Hosted rooms** card: it loads `/api/events` when the tab opens, lists
+each room with when/venue and seats-left, and a Book/Cancel button that POSTs the action and
+updates the row from the server's response (Full when sold out, spinner while in flight, 401 →
+sign out). New `HostedRoom` type, `hostedRooms`/`roomsLoading`/`roomsError`/`bookingRoomId`
+state, a load effect keyed on `[authToken, activeTab]`, `toggleRoomBooking`, and `room*` styles.
+
+### Verification
+| Check | Result |
+|---|---|
+| `apps/dashboard` `tsc` + `eslint` + `next build` | clean (both new routes compile) |
+| `apps/mobile` `tsc` | clean |
+| Live book/cancel/capacity + CSV export | interrupted mid-run; static checks pass — live pass still to re-run |

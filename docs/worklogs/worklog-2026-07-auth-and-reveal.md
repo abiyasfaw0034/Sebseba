@@ -426,5 +426,42 @@ state, a load effect keyed on `[authToken, activeTab]`, `toggleRoomBooking`, and
 | Check | Result |
 |---|---|
 | `apps/dashboard` `tsc` + `eslint` + `next build` | clean (both new routes compile) |
-| `apps/mobile` `tsc` | clean |
-| Live book/cancel/capacity + CSV export | interrupted mid-run; static checks pass — live pass still to re-run |
+| `apps/mobile` `tsc` + `expo export --platform web` | clean, bundles |
+| Live: list / book / idempotent re-book / two-member seat count / cancel | all correct |
+| Live: capacity | filled a 12-seat room, 13th booking → 409 `reason:full`, list shows 12/12 left=0 |
+| Live: errors | unknown event → 404, missing eventId → 400 |
+| Live: CSV export | events + members CSV with correct headers/rows, `text/csv` + attachment; bad dataset → 400 |
+
+## Smarter blind-match ranking — geo + availability (2026-08-06)
+
+Match ranking treated location as a coarse equality check (+12 same city) and had no notion of
+when people are free. This pass adds real geographic proximity and schedule overlap.
+
+### New onboarding signal — availability
+Added `availability` to the profile (`OnboardingProfile` in `apps/mobile/App.tsx` and the backend
+`route.ts`, plus the candidates route's `CandidateProfile`). New onboarding step after Location:
+"When are you free for a hosted date?" with options Weekday evenings / Weekends / Daytime flexible
+/ Late evenings / Varies week to week. Because it lives inside `profile`, it persists through the
+existing `normalizeProfile` — verified live that PUT→GET keeps it and `/api/candidates` returns it
+(older records without the field are backfilled to the `Weekends` default on read).
+
+### Geo model + scoring — `apps/mobile/App.tsx`
+Added a coordinate table for the pickable cities (plus Bahir Dar/Gondar/Mekelle/Jimma for
+robustness) and a haversine `cityDistanceKm`. Sanity-checked: Addis→Adama 80 km, Addis→Hawassa
+221 km, Addis→Dire Dawa 348 km. `rankCandidate` now:
+- replaces the city-equality block with `proximityScore` — same city +14, ≤120 km +11, ≤300 km +7,
+  ≤600 km +4, farther +1; diaspora-friendly +5; both-diaspora +8;
+- adds `availabilityScore` — exact overlap +9, a flexible slot on either side +5;
+- sets the card's `distance` from `distanceLabel` ("Same city" / "Nearby · ~80 km" / "~348 km away"
+  / "Diaspora · remote-first").
+The match card's compatibility list now shows Distance and Availability rows. Simulation for an
+Addis/Weekends user ranked a same-city/same-availability match at geo+avail 23 vs 7–10 for
+distant/mismatched ones, on top of the existing intention/language/faith signals.
+
+### Verification
+| Check | Result |
+|---|---|
+| `apps/dashboard` `tsc` + `eslint` + `next build` | clean |
+| `apps/mobile` `tsc` + `expo export --platform web` | clean, bundles |
+| Haversine distances | realistic for known Ethiopian city pairs |
+| Live: PUT→GET `availability` persists; `/api/candidates` returns it | confirmed (defaults backfilled) |

@@ -15,6 +15,7 @@ type OnboardingProfile = {
   familyExpectation: string;
   revealPace: string;
   dateStyle: string;
+  availability: string;
   dealbreakers: string[];
 };
 
@@ -51,6 +52,7 @@ const defaultProfile: OnboardingProfile = {
   familyExpectation: "Family matters early",
   revealPace: "Voice before photos",
   dateStyle: "Buna first",
+  availability: "Weekends",
   dealbreakers: ["Rushed photos"],
 };
 
@@ -110,6 +112,7 @@ const normalizeProfile =(value: unknown, fallback: OnboardingProfile = defaultPr
     familyExpectation: asString(input.familyExpectation, fallback.familyExpectation),
     revealPace: asString(input.revealPace, fallback.revealPace),
     dateStyle: asString(input.dateStyle, fallback.dateStyle),
+    availability: asString(input.availability, fallback.availability),
     dealbreakers: asStringArray(input.dealbreakers, fallback.dealbreakers),
   };
 };

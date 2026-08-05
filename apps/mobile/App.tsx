@@ -24,6 +24,7 @@ type OnboardingProfile = {
   familyExpectation: string;
   revealPace: string;
   dateStyle: string;
+  availability: string;
   dealbreakers: string[];
 };
 
@@ -47,6 +48,7 @@ type CandidateMatch = {
   familyExpectation: string;
   revealPace: string;
   dateStyle: string;
+  availability: string;
   dealbreakers: string[];
   riskSignals: string[];
   cues: string[];
@@ -134,6 +136,7 @@ const defaultOnboardingProfile: OnboardingProfile = {
   familyExpectation: 'Family matters early',
   revealPace: 'Voice before photos',
   dateStyle: 'Buna first',
+  availability: 'Weekends',
   dealbreakers: ['Rushed photos'],
 };
 
@@ -153,6 +156,14 @@ const onboardingSteps: OnboardingStep[] = [
     title: 'Where should matches start?',
     icon: 'location-outline',
     options: ['Addis Ababa', 'Hawassa', 'Dire Dawa', 'Adama', 'Diaspora'],
+  },
+  {
+    key: 'availability',
+    mode: 'single',
+    kicker: 'Availability',
+    title: 'When are you free for a hosted date?',
+    icon: 'time-outline',
+    options: ['Weekday evenings', 'Weekends', 'Daytime flexible', 'Late evenings', 'Varies week to week'],
   },
   {
     key: 'languages',
@@ -216,6 +227,7 @@ const candidateMatches: CandidateMatch[] = [
     familyExpectation: 'Family matters early',
     revealPace: 'Voice before photos',
     dateStyle: 'Buna first',
+    availability: 'Weekends',
     dealbreakers: ['Rushed photos', 'Late-night pressure'],
     riskSignals: [],
     cues: ['Buna conversation', 'Orthodox holidays', 'Ethio-jazz', 'Family stories'],
@@ -234,6 +246,7 @@ const candidateMatches: CandidateMatch[] = [
     familyExpectation: 'Family matters early',
     revealPace: 'Prompt first',
     dateStyle: 'Mesob dinner',
+    availability: 'Weekday evenings',
     dealbreakers: ['Disrespectful jokes', 'No hosted dates'],
     riskSignals: ['Different faith pace'],
     cues: ['Mesob dining', 'Weekend travel', 'Faith routines', 'Family values'],
@@ -252,6 +265,7 @@ const candidateMatches: CandidateMatch[] = [
     familyExpectation: 'Private at first',
     revealPace: 'Slow reveal',
     dateStyle: 'Art walk',
+    availability: 'Daytime flexible',
     dealbreakers: ['Rushed photos'],
     riskSignals: [],
     cues: ['Storytelling', 'Language games', 'Dance', 'Old city walks'],
@@ -270,6 +284,7 @@ const candidateMatches: CandidateMatch[] = [
     familyExpectation: 'Diaspora flexible',
     revealPace: 'Open after host check',
     dateStyle: 'Community event',
+    availability: 'Varies week to week',
     dealbreakers: ['Late-night pressure', 'Disrespectful jokes'],
     riskSignals: [],
     cues: ['Diaspora stories', 'Community events', 'Music swaps', 'Family calls'],
@@ -427,6 +442,7 @@ const buildCandidateFromSummary = (summary: CandidateSummary): CandidateMatch =>
     familyExpectation: profile.familyExpectation,
     revealPace: profile.revealPace,
     dateStyle: profile.dateStyle,
+    availability: profile.availability,
     dealbreakers: profile.dealbreakers,
     riskSignals: [],
     cues: buildCuesFromProfile(profile),
@@ -518,6 +534,103 @@ const intentionGroups = [
 const areIntentionsCompatible = (first: string, second: string) =>
   first === second || intentionGroups.some((group) => group.includes(first) && group.includes(second));
 
+// Approximate coordinates for the cities members can pick, used for match proximity.
+const cityCoordinates: Record<string, { lat: number; lon: number }> = {
+  'Addis Ababa': { lat: 9.03, lon: 38.74 },
+  Hawassa: { lat: 7.06, lon: 38.48 },
+  'Dire Dawa': { lat: 9.59, lon: 41.86 },
+  Adama: { lat: 8.54, lon: 39.27 },
+  'Bahir Dar': { lat: 11.59, lon: 37.39 },
+  Gondar: { lat: 12.6, lon: 37.47 },
+  Mekelle: { lat: 13.49, lon: 39.47 },
+  Jimma: { lat: 7.68, lon: 36.83 },
+};
+
+const toRadians = (degrees: number) => (degrees * Math.PI) / 180;
+
+// Haversine distance in km between two known cities; null when either side is remote/diaspora.
+const cityDistanceKm = (a: string, b: string): number | null => {
+  const from = cityCoordinates[a];
+  const to = cityCoordinates[b];
+  if (!from || !to) {
+    return null;
+  }
+  if (a === b) {
+    return 0;
+  }
+  const earthRadiusKm = 6371;
+  const dLat = toRadians(to.lat - from.lat);
+  const dLon = toRadians(to.lon - from.lon);
+  const lat1 = toRadians(from.lat);
+  const lat2 = toRadians(to.lat);
+  const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLon / 2) ** 2;
+  return Math.round(2 * earthRadiusKm * Math.asin(Math.sqrt(h)));
+};
+
+// Human-readable distance for the match card.
+const distanceLabel = (userCity: string, candidateCity: string): string => {
+  if (userCity === 'Diaspora' && candidateCity === 'Diaspora') {
+    return 'Both diaspora';
+  }
+  if (userCity === 'Diaspora' || candidateCity === 'Diaspora') {
+    return 'Diaspora · remote-first';
+  }
+  const km = cityDistanceKm(userCity, candidateCity);
+  if (km === null) {
+    return candidateCity;
+  }
+  if (km === 0) {
+    return 'Same city';
+  }
+  if (km <= 120) {
+    return `Nearby · ~${km} km`;
+  }
+  return `~${km} km away`;
+};
+
+// Score for how close two members are (max ~14). Diaspora pairs are handled specially.
+const proximityScore = (userCity: string, candidateCity: string): { score: number; reason: string } => {
+  if (userCity === 'Diaspora' && candidateCity === 'Diaspora') {
+    return { score: 8, reason: 'both remote-first' };
+  }
+  if (userCity === 'Diaspora' || candidateCity === 'Diaspora') {
+    return { score: 5, reason: 'diaspora-friendly distance' };
+  }
+  const km = cityDistanceKm(userCity, candidateCity);
+  if (km === null) {
+    return { score: 4, reason: '' };
+  }
+  if (km === 0) {
+    return { score: 14, reason: `${candidateCity} · same city` };
+  }
+  if (km <= 120) {
+    return { score: 11, reason: `nearby · ~${km} km` };
+  }
+  if (km <= 300) {
+    return { score: 7, reason: `~${km} km · a short trip` };
+  }
+  if (km <= 600) {
+    return { score: 4, reason: '' };
+  }
+  return { score: 1, reason: '' };
+};
+
+// Availability overlap score (max 9). Flexible slots pair well with anything.
+const flexibleAvailability = new Set(['Daytime flexible', 'Varies week to week']);
+
+const availabilityScore = (
+  userAvailability: string,
+  candidateAvailability: string,
+): { score: number; reason: string } => {
+  if (userAvailability === candidateAvailability) {
+    return { score: 9, reason: `both free ${userAvailability.toLowerCase()}` };
+  }
+  if (flexibleAvailability.has(userAvailability) || flexibleAvailability.has(candidateAvailability)) {
+    return { score: 5, reason: 'flexible schedules' };
+  }
+  return { score: 0, reason: '' };
+};
+
 const rankCandidate = (user: OnboardingProfile, candidate: CandidateMatch): RankedMatch => {
   const sharedLanguages = user.languages.filter((language) => candidate.languages.includes(language));
   const riskConflicts = user.dealbreakers.filter((dealbreaker) => candidate.riskSignals.includes(dealbreaker));
@@ -530,12 +643,16 @@ const rankCandidate = (user: OnboardingProfile, candidate: CandidateMatch): Rank
     reasons.push(`${candidate.intention} intention`);
   }
 
-  if (user.city === candidate.city) {
-    score += 12;
-    reasons.push(`${candidate.city} location`);
-  } else if (user.city === 'Diaspora' || candidate.city === 'Diaspora') {
-    score += 7;
-    reasons.push('diaspora-friendly distance');
+  const proximity = proximityScore(user.city, candidate.city);
+  score += proximity.score;
+  if (proximity.reason) {
+    reasons.push(proximity.reason);
+  }
+
+  const availability = availabilityScore(user.availability, candidate.availability);
+  if (availability.score > 0) {
+    score += availability.score;
+    reasons.push(availability.reason);
   }
 
   if (sharedLanguages.length > 0) {
@@ -572,6 +689,7 @@ const rankCandidate = (user: OnboardingProfile, candidate: CandidateMatch): Rank
 
   return {
     ...candidate,
+    distance: distanceLabel(user.city, candidate.city),
     score: Math.max(42, Math.min(98, score)),
     reasons: reasons.slice(0, 4),
     sharedLanguages,
@@ -666,6 +784,8 @@ function AppContent() {
       : syncCopy[syncStatus];
   const matchSignals = [
     { label: 'Best overlap', value: selectedMatch.reasons[0] ?? 'values aligned' },
+    { label: 'Distance', value: selectedMatch.distance },
+    { label: 'Availability', value: selectedMatch.availability },
     { label: 'Language fit', value: selectedMatch.sharedLanguages.join(' + ') || 'Host-assisted' },
     { label: 'Reveal pace', value: selectedMatch.revealPace },
   ];

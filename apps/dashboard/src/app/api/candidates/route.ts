@@ -18,6 +18,7 @@ type CandidateProfile = {
   familyExpectation: string;
   revealPace: string;
   dateStyle: string;
+  availability: string;
   dealbreakers: string[];
 };
 
@@ -61,6 +62,7 @@ const buildProfile = (value: unknown): CandidateProfile => {
     familyExpectation: asString(input.familyExpectation, "Introduce after trust"),
     revealPace: asString(input.revealPace, "Voice before photos"),
     dateStyle: asString(input.dateStyle, "Buna first"),
+    availability: asString(input.availability, "Weekends"),
     dealbreakers: asStringArray(input.dealbreakers, []),
   };
 };

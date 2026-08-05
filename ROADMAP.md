@@ -31,6 +31,10 @@
   actual bookings (no more hardcoded rooms)
 - Dashboard reports: booking totals, capacity fill, unique members booked, and a city
   breakdown, plus CSV export of members and events (export gated by an optional ops token)
+- Smarter blind-match ranking: a geo-distance model (haversine over Ethiopian city
+  coordinates, with diaspora/remote handling) and an availability-overlap signal fold into the
+  compatibility score, so matches favour reachable people on compatible schedules; the match
+  card shows real distance ("Same city", "Nearby · ~80 km", "~348 km away") and availability
 
 ## Next product steps
 
@@ -40,9 +44,10 @@
    session list, login rate-limiting, and single-use password reset. Remaining: deliver reset
    tokens by email (prototype returns them in dev only) and move the rate limiter to a shared
    store once the API runs on more than one process.
-2. Replace local sample matches with database-backed ranked candidates. (Partly done:
-   real accounts now match each other via `GET /api/candidates` off the file store;
-   swap the file store for a database and add geo/availability filtering.)
+2. Replace local sample matches with database-backed ranked candidates. (Mostly done:
+   real accounts match each other via `GET /api/candidates` off the file store, and ranking now
+   uses geo distance + availability overlap alongside intention/language/faith. Remaining: swap
+   the file store for a database and add server-side geo/availability pre-filtering at scale.)
 3. ~~Upgrade prototype chat to real-time delivery with member-to-member replies.~~ Done —
    messages are delivered member-to-member through a shared conversation store
    (`GET/POST /api/messages`, `GET/POST /api/inbox`), with an inbox, unread counts, read
